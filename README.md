@@ -1,6 +1,6 @@
 # Git implementation
 
-Kilde: [https://git-scm.com/book/en/v2/Git-Internals-Plumbing-and-Porcelain|GIT]
+Kilde: [Git håndboka](https://git-scm.com/book/en/v2/Git-Internals-Plumbing-and-Porcelain)
 
 "Git is fundamentally a content-addressable filesystem with a VCS user interface written on top of it".
 
