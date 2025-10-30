@@ -170,6 +170,8 @@ impl Index {
     }
 
     fn parse_entries(mut bytes: &[u8]) -> Vec<IndexEntry> {
+        let mut entries = Vec::new();
+
         let ctime_sec  = read_be_u32(&mut bytes);
         let ctime_nano = read_be_u32(&mut bytes);
         let mtime_sec  = read_be_u32(&mut bytes);
@@ -181,10 +183,10 @@ impl Index {
         let gid        = read_be_u32(&mut bytes);
         let size       = read_be_u32(&mut bytes);
 
-        let key: [u8;20] = (&bytes[0..20]).try_into().unwrap();
+        let key = Hash((&bytes[0..20]).try_into().unwrap());
         let flags = u16::from_be_bytes((&bytes[20..22]).try_into().unwrap());
 
-        let ie = IndexEntry {
+        entries.push(IndexEntry {
             ctime_sec,
             ctime_nano,
             mtime_sec,
@@ -195,13 +197,11 @@ impl Index {
             uid,
             gid,
             size,
-            key: Hash(key),
+            key,
             flags
-        };
+        });
 
-        println!("{}", ie);
-
-        Vec::new()
+        entries
     }
 }
 
@@ -233,11 +233,11 @@ mod tests {
 
 
     #[test]
-    fn index_header() {
-        let filename = ".git/index";
+    fn parse_index_header() {
+        let filename = "example_index";
 
-        let data = Index::from_blob(filename);
-        let bytes: [u8; 4] = data.header.signature.to_be_bytes();
+        let index = Index::from_blob(filename);
+        let bytes: [u8; 4] = index.header.signature.to_be_bytes();
         let actual = str::from_utf8(&bytes).unwrap();
 
         let expected = "DIRC";
@@ -245,11 +245,14 @@ mod tests {
     }
 
     #[test]
-    fn index_entry() {
-        let filename = ".git/index";
+    fn parse_index_entry_hash() {
+        let filename = "example_index";
 
-        let data = Index::from_blob(filename);
-        assert_eq!(1, 0);
+        let index = Index::from_blob(filename);
+        let key = index.entries[0].key.to_string();
+
+        let expected = String::from("ea8c4bf7f35f6f77f75d92ad8ce8349f6e81ddba");
+        assert_eq!(key, expected);
     }
 }
 
