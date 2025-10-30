@@ -23,16 +23,15 @@ impl std::fmt::Display for Object {
 struct Hash([u8; 20]);
 
 impl Hash {
-    fn from(input: String) -> Self {
+    fn from_string(input: String) -> Self {
         let mut hasher = Sha1::new();
         hasher.update(input);
         Hash(hasher.finalize().into())
     }
 
-
-    fn blob(content: &String) -> Self {
+    fn from_blob(content: &String) -> Self {
         let blob = format!("{} {}\0{}", Object::Blob, content.len(), content);
-        Self::from(blob)
+        Self::from_string(blob)
     }
 }
 
@@ -47,10 +46,22 @@ enum Mode {
     Tree = 040000
 }
 
-fn read_be_u32(input: &mut &[u8]) -> u32 {
+fn take_u16(input: &mut &[u8]) -> u16 {
+    let (int_bytes, rest) = input.split_at(size_of::<u16>());
+    *input = rest;
+    u16::from_be_bytes(int_bytes.try_into().unwrap())
+}
+
+fn take_u32(input: &mut &[u8]) -> u32 {
     let (int_bytes, rest) = input.split_at(size_of::<u32>());
     *input = rest;
     u32::from_be_bytes(int_bytes.try_into().unwrap())
+}
+
+fn take_hash(input: &mut &[u8]) -> Hash {
+    let (hashed_bytes, rest) = input.split_at(20);
+    *input = rest;
+    Hash(hashed_bytes.try_into().unwrap())
 }
 
 fn timestamp_to_date(seconds: u32, nanoseconds: u32) -> String {
@@ -162,9 +173,9 @@ impl Index {
     }
 
     fn parse_header(mut bytes: &[u8]) -> IndexHeader {
-        let signature = read_be_u32(&mut bytes);
-        let version = read_be_u32(&mut bytes);
-        let num_entries = read_be_u32(&mut bytes);
+        let signature = take_u32(&mut bytes);
+        let version = take_u32(&mut bytes);
+        let num_entries = take_u32(&mut bytes);
 
         IndexHeader { signature, version, num_entries }
     }
@@ -172,19 +183,19 @@ impl Index {
     fn parse_entries(mut bytes: &[u8]) -> Vec<IndexEntry> {
         let mut entries = Vec::new();
 
-        let ctime_sec  = read_be_u32(&mut bytes);
-        let ctime_nano = read_be_u32(&mut bytes);
-        let mtime_sec  = read_be_u32(&mut bytes);
-        let mtime_nano = read_be_u32(&mut bytes);
-        let dev        = read_be_u32(&mut bytes);
-        let ino        = read_be_u32(&mut bytes);
-        let mode       = read_be_u32(&mut bytes);
-        let uid        = read_be_u32(&mut bytes);
-        let gid        = read_be_u32(&mut bytes);
-        let size       = read_be_u32(&mut bytes);
+        let ctime_sec  = take_u32(&mut bytes);
+        let ctime_nano = take_u32(&mut bytes);
+        let mtime_sec  = take_u32(&mut bytes);
+        let mtime_nano = take_u32(&mut bytes);
+        let dev        = take_u32(&mut bytes);
+        let ino        = take_u32(&mut bytes);
+        let mode       = take_u32(&mut bytes);
+        let uid        = take_u32(&mut bytes);
+        let gid        = take_u32(&mut bytes);
+        let size       = take_u32(&mut bytes);
 
-        let key = Hash((&bytes[0..20]).try_into().unwrap());
-        let flags = u16::from_be_bytes((&bytes[20..22]).try_into().unwrap());
+        let key = take_hash(&mut bytes);
+        let flags = take_u16(&mut bytes);
 
         entries.push(IndexEntry {
             ctime_sec,
@@ -215,7 +226,7 @@ mod tests {
     fn sha1_hash() {
         let input = String::from("The quick brown fox jumps over the lazy dog");
 
-        let hashed = Hash::from(input);
+        let hashed = Hash::from_string(input);
 
         let expected = String::from("2fd4e1c67a2d28fced849ee1bb76e7391b93eb12");
         assert_eq!(hashed.to_string(), expected);
@@ -225,7 +236,7 @@ mod tests {
     fn hash_object_blob() {
         let content = String::from("what is up, doc?");
 
-        let hashed = Hash::blob(&content);
+        let hashed = Hash::from_blob(&content);
 
         let expected = String::from("bd9dbf5aae1a3862dd1526723246b20206e5fc37");
         assert_eq!(hashed.to_string(), expected);
