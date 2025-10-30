@@ -91,12 +91,14 @@ struct IndexEntry {
      * The last time a file's metadata changed. 
      * 32-bit ctime seconds and 32-bit ctime nanosecond fractions 
      */
-    ctime: u64,
+    ctime_sec: u32,
+    ctime_nano: u32,
     /*
      * The last time a file's data changed. 
      *  32-bit ctime seconds and 32-bit ctime nanosecond fractions 
      */
-    mtime: u64,
+    mtime_sec: u32,
+    mtime_nano: u32,
     /* stat(2) data */
     dev: u32,
     /* stat(2) data */
@@ -130,6 +132,24 @@ struct IndexEntry {
     flags: u16,
 }
 
+impl std::fmt::Display for IndexEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "{{")?;
+        writeln!(f, "  ctime {}", 
+            timestamp_to_date(self.ctime_sec, self.ctime_nano))?;
+        writeln!(f, "  mtime {}", 
+            timestamp_to_date(self.mtime_sec, self.mtime_nano))?;
+        writeln!(f, "  dev   {}", self.dev)?;
+        writeln!(f, "  ino   {}", self.ino)?;
+        writeln!(f, "  mode  {}", self.mode)?;
+        writeln!(f, "  uid   {}", self.uid)?;
+        writeln!(f, "  gid   {}", self.gid)?;
+        writeln!(f, "  size  {}", self.size)?;
+        writeln!(f, "  key   {}", self.key)?;
+        writeln!(f, "  flags {}", self.flags)?;
+        writeln!(f, "}}")
+    }
+}
 
 impl Index {
     fn from_blob(filename: &str) -> Self {
@@ -150,17 +170,36 @@ impl Index {
     }
 
     fn parse_entries(mut bytes: &[u8]) -> Vec<IndexEntry> {
-        for i in 0..10 {
-            let ctime_seconds = read_be_u32(&mut bytes);
-            let ctime_nanoseconds = read_be_u32(&mut bytes);
-            println!(
-                "{:2}{:16}{:16} {:?}", 
-                i, 
-                ctime_seconds, 
-                ctime_nanoseconds, 
-                timestamp_to_date(ctime_seconds, ctime_nanoseconds)
-            );
-        }
+        let ctime_sec  = read_be_u32(&mut bytes);
+        let ctime_nano = read_be_u32(&mut bytes);
+        let mtime_sec  = read_be_u32(&mut bytes);
+        let mtime_nano = read_be_u32(&mut bytes);
+        let dev        = read_be_u32(&mut bytes);
+        let ino        = read_be_u32(&mut bytes);
+        let mode       = read_be_u32(&mut bytes);
+        let uid        = read_be_u32(&mut bytes);
+        let gid        = read_be_u32(&mut bytes);
+        let size       = read_be_u32(&mut bytes);
+
+        let key: [u8;20] = (&bytes[0..20]).try_into().unwrap();
+        let flags = u16::from_be_bytes((&bytes[20..22]).try_into().unwrap());
+
+        let ie = IndexEntry {
+            ctime_sec,
+            ctime_nano,
+            mtime_sec,
+            mtime_nano,
+            dev,
+            ino,
+            mode,
+            uid,
+            gid,
+            size,
+            key: Hash(key),
+            flags
+        };
+
+        println!("{}", ie);
 
         Vec::new()
     }
@@ -194,7 +233,7 @@ mod tests {
 
 
     #[test]
-    fn index_entry_from_blob() {
+    fn index_header() {
         let filename = ".git/index";
 
         let data = Index::from_blob(filename);
@@ -203,6 +242,14 @@ mod tests {
 
         let expected = "DIRC";
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn index_entry() {
+        let filename = ".git/index";
+
+        let data = Index::from_blob(filename);
+        assert_eq!(1, 0);
     }
 }
 
