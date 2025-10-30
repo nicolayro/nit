@@ -57,6 +57,8 @@ git compresses content with zlib, which is stored in `.git/<first 2 digits>/<fin
     https://github.com/rust-lang/flate2-rs
     https://crates.io/crates/sha1
 
+### Index format
+https://git-scm.com/docs/index-format
 
 ### References
 For å finne igjen hasher bruker vi `git/refs`
