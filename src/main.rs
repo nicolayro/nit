@@ -1,9 +1,18 @@
-use std::fs;
+use std::{fmt, fs};
 
 use sha1::{Sha1, Digest};
 use chrono::DateTime;
 
-fn main() { }
+fn main() { 
+    let filename = ".git/index";
+
+    let index = Index::from_blob(filename);
+
+    for entry in index.entries {
+        println!("{}", entry);
+    }
+
+}
 
 enum Object {
     Blob,
@@ -46,24 +55,6 @@ enum Mode {
     Tree = 040000
 }
 
-fn take_u16(input: &mut &[u8]) -> u16 {
-    let (int_bytes, rest) = input.split_at(size_of::<u16>());
-    *input = rest;
-    u16::from_be_bytes(int_bytes.try_into().unwrap())
-}
-
-fn take_u32(input: &mut &[u8]) -> u32 {
-    let (int_bytes, rest) = input.split_at(size_of::<u32>());
-    *input = rest;
-    u32::from_be_bytes(int_bytes.try_into().unwrap())
-}
-
-fn take_hash(input: &mut &[u8]) -> Hash {
-    let (hashed_bytes, rest) = input.split_at(20);
-    *input = rest;
-    Hash(hashed_bytes.try_into().unwrap())
-}
-
 fn timestamp_to_date(seconds: u32, nanoseconds: u32) -> String {
     let seconds: i64 = i64::from(seconds);
     let dt = DateTime::from_timestamp(seconds, nanoseconds);
@@ -96,7 +87,95 @@ struct IndexHeader {
     num_entries: u32
 }
 
-#[derive(Debug)]
+impl Index {
+    fn from_blob(filename: &str) -> Self {
+        let contents = fs::read(filename).unwrap();
+        let (hbytes, ebytes) = contents.split_at(12);
+
+        let header = Self::parse_header(hbytes);
+
+        let entries = Self::parse_entries(ebytes, header.num_entries as usize);
+        Self { header, entries }
+    }
+
+    fn parse_header(mut bytes: &[u8]) -> IndexHeader {
+        let signature = Self::take_u32(&mut bytes);
+        let version = Self::take_u32(&mut bytes);
+        let num_entries = Self::take_u32(&mut bytes);
+
+        IndexHeader { signature, version, num_entries }
+    }
+
+    fn parse_entries(mut bytes: &[u8], num_entries: usize) -> Vec<IndexEntry> {
+        let mut entries = Vec::with_capacity(num_entries);
+
+        for i in 0..num_entries {
+            let ctime_sec  = Self::take_u32(&mut bytes);
+            let ctime_nano = Self::take_u32(&mut bytes);
+            let mtime_sec  = Self::take_u32(&mut bytes);
+            let mtime_nano = Self::take_u32(&mut bytes);
+            let dev        = Self::take_u32(&mut bytes);
+            let ino        = Self::take_u32(&mut bytes);
+            let mode       = Self::take_u32(&mut bytes);
+            let uid        = Self::take_u32(&mut bytes);
+            let gid        = Self::take_u32(&mut bytes);
+            let size       = Self::take_u32(&mut bytes);
+            let key        = Self::take_hash(&mut bytes);
+            let flags      = Self::take_u16(&mut bytes);
+            let name_len: usize = (flags & 0x0FFF).into();
+            let name_bytes = Self::take_n_bytes(&mut bytes, name_len);
+            let name = String::from_utf8(name_bytes)
+                .expect("ERROR: Unable to read file name");
+            // 1-8 nul bytes as necessary to pad the entry to a multiple of eight bytes 
+            // while keeping the name NUL-terminated.
+            let padding_len = 8 - ((6+name_len) % 8);
+            let padding = Self::take_n_bytes(&mut bytes, padding_len);
+
+            entries.push(IndexEntry {
+                ctime_sec,
+                ctime_nano,
+                mtime_sec,
+                mtime_nano,
+                dev,
+                ino,
+                mode,
+                uid,
+                gid,
+                size,
+                key,
+                flags,
+                name
+            });
+        }
+
+        entries
+    }
+
+    fn take_u16(input: &mut &[u8]) -> u16 {
+        let (int_bytes, rest) = input.split_at(size_of::<u16>());
+        *input = rest;
+        u16::from_be_bytes(int_bytes.try_into().unwrap())
+    }
+
+    fn take_u32(input: &mut &[u8]) -> u32 {
+        let (int_bytes, rest) = input.split_at(size_of::<u32>());
+        *input = rest;
+        u32::from_be_bytes(int_bytes.try_into().unwrap())
+    }
+
+    fn take_hash(input: &mut &[u8]) -> Hash {
+        let (hashed_bytes, rest) = input.split_at(20);
+        *input = rest;
+        Hash(hashed_bytes.try_into().unwrap())
+    }
+
+    fn take_n_bytes(input: &mut &[u8], n: usize) -> Vec<u8> {
+        let (bytes, rest) = input.split_at(n);
+        *input = rest;
+        bytes.to_vec()
+    }
+}
+
 struct IndexEntry {
     /*
      * The last time a file's metadata changed. 
@@ -141,15 +220,40 @@ struct IndexEntry {
      *   is stored in this field.
     */
     flags: u16,
+
+    /* Variable length name entry (relative unix path)*/
+    name: String,
 }
 
-impl std::fmt::Display for IndexEntry {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl IndexEntry {
+    fn object_type(self: &Self) -> u32 {
+        // First 4 bits
+        (self.mode >> 12) & 0x00F
+    }
+
+    fn permission(self: &Self) -> u32 {
+        // Final 9 bits
+        self.mode & 0x1FF
+    }
+
+}
+
+impl fmt::Display for IndexEntry {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:02o}{:04o} {} {}\t{}", 
+            self.object_type(),
+            self.permission(),
+            self.key,
+            0,
+            self.name)
+    }
+}
+
+impl fmt::Debug for IndexEntry {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "{{")?;
-        writeln!(f, "  ctime {}", 
-            timestamp_to_date(self.ctime_sec, self.ctime_nano))?;
-        writeln!(f, "  mtime {}", 
-            timestamp_to_date(self.mtime_sec, self.mtime_nano))?;
+        writeln!(f, "  ctime {}:{}", self.ctime_sec, self.ctime_nano)?;
+        writeln!(f, "  mtime {}:{}", self.mtime_sec, self.mtime_nano)?;
         writeln!(f, "  dev   {}", self.dev)?;
         writeln!(f, "  ino   {}", self.ino)?;
         writeln!(f, "  mode  {}", self.mode)?;
@@ -158,63 +262,11 @@ impl std::fmt::Display for IndexEntry {
         writeln!(f, "  size  {}", self.size)?;
         writeln!(f, "  key   {}", self.key)?;
         writeln!(f, "  flags {}", self.flags)?;
+        writeln!(f, "  name  {}", self.name)?;
         writeln!(f, "}}")
     }
 }
 
-impl Index {
-    fn from_blob(filename: &str) -> Self {
-        let contents = fs::read(filename).unwrap();
-        let (hbytes, ebytes) = contents.split_at(12);
-
-        let header = Self::parse_header(hbytes);
-        let entries = Self::parse_entries(ebytes);
-        Self { header, entries }
-    }
-
-    fn parse_header(mut bytes: &[u8]) -> IndexHeader {
-        let signature = take_u32(&mut bytes);
-        let version = take_u32(&mut bytes);
-        let num_entries = take_u32(&mut bytes);
-
-        IndexHeader { signature, version, num_entries }
-    }
-
-    fn parse_entries(mut bytes: &[u8]) -> Vec<IndexEntry> {
-        let mut entries = Vec::new();
-
-        let ctime_sec  = take_u32(&mut bytes);
-        let ctime_nano = take_u32(&mut bytes);
-        let mtime_sec  = take_u32(&mut bytes);
-        let mtime_nano = take_u32(&mut bytes);
-        let dev        = take_u32(&mut bytes);
-        let ino        = take_u32(&mut bytes);
-        let mode       = take_u32(&mut bytes);
-        let uid        = take_u32(&mut bytes);
-        let gid        = take_u32(&mut bytes);
-        let size       = take_u32(&mut bytes);
-
-        let key = take_hash(&mut bytes);
-        let flags = take_u16(&mut bytes);
-
-        entries.push(IndexEntry {
-            ctime_sec,
-            ctime_nano,
-            mtime_sec,
-            mtime_nano,
-            dev,
-            ino,
-            mode,
-            uid,
-            gid,
-            size,
-            key,
-            flags
-        });
-
-        entries
-    }
-}
 
 
 
@@ -264,6 +316,31 @@ mod tests {
 
         let expected = String::from("ea8c4bf7f35f6f77f75d92ad8ce8349f6e81ddba");
         assert_eq!(key, expected);
+    }
+
+    #[test]
+    fn parse_mode() {
+        let filename = "example_index";
+
+        let index = Index::from_blob(filename);
+        let object_type = index.entries[0].object_type();
+        let permission = index.entries[0].permission();
+
+        let expected_type = 0o10;
+        let expected_permission = 0o0644;
+
+        assert_eq!(object_type, expected_type);
+        assert_eq!(permission, expected_permission);
+    }
+
+    fn list_entry() {
+        let filename = "example_index";
+
+        let index = Index::from_blob(filename);
+        let output = index.entries[4].to_string();
+
+        let expected = "100644 d5434a005c3a5fb57034b58bc10bb20b8ce88950 0       example_index";
+        assert_eq!(output, expected);
     }
 }
 
