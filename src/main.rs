@@ -1,30 +1,16 @@
 use std::{fmt, fs};
+use std::os::unix::fs::MetadataExt;
 
 use sha1::{Sha1, Digest};
 use chrono::DateTime;
 
 fn main() { 
-    let filename = ".git/index";
+    let filename = String::from("examples/example_index");
 
-    let index = Index::from_blob(filename);
+    let index = Index::from_blob(&filename);
 
     for entry in index.entries {
         println!("{}", entry);
-    }
-
-}
-
-enum Object {
-    Blob,
-    Tree
-}
-
-impl std::fmt::Display for Object {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Object::Blob => write!(f, "blob"),
-            Object::Tree => write!(f, "tree"),
-        }
     }
 }
 
@@ -38,10 +24,49 @@ impl Hash {
         Hash(hasher.finalize().into())
     }
 
-    fn from_blob(content: &String) -> Self {
-        let blob = format!("{} {}\0{}", Object::Blob, content.len(), content);
-        Self::from_string(blob)
+    fn from_bytes(header: String, content: Vec<u8>) -> Self {
+        let mut hasher = Sha1::new();
+        hasher.update(header);
+        hasher.update(content);
+        Hash(hasher.finalize().into())
     }
+}
+
+enum ObjectMode {
+    File = 100644,
+    Tree = 040000
+}
+
+enum ObjectKind {
+    Blob,
+    Tree
+}
+
+impl std::fmt::Display for ObjectKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ObjectKind::Blob => write!(f, "blob"),
+            ObjectKind::Tree => write!(f, "tree"),
+        }
+    }
+}
+
+fn hash_object(object_type: ObjectKind, content: Vec<u8>) -> Hash {
+    match object_type {
+        ObjectKind::Blob => hash_blob(content),
+        ObjectKind::Tree => hash_tree(content)
+    }
+
+}
+
+fn hash_blob(content: Vec<u8>) -> Hash {
+    let header = format!("{} {}\0", ObjectKind::Blob, content.len());
+    Hash::from_bytes(header, content)
+}
+
+fn hash_tree(content: Vec<u8>) -> Hash {
+    let header = format!("{} {}\0", ObjectKind::Tree, content.len());
+    Hash::from_bytes(header, content)
 }
 
 impl std::fmt::Display for Hash {
@@ -50,9 +75,29 @@ impl std::fmt::Display for Hash {
     }
 }
 
-enum Mode {
-    File = 100644,
-    Tree = 040000
+
+fn take_u16(input: &mut &[u8]) -> u16 {
+    let (int_bytes, rest) = input.split_at(size_of::<u16>());
+    *input = rest;
+    u16::from_be_bytes(int_bytes.try_into().unwrap())
+}
+
+fn take_u32(input: &mut &[u8]) -> u32 {
+    let (int_bytes, rest) = input.split_at(size_of::<u32>());
+    *input = rest;
+    u32::from_be_bytes(int_bytes.try_into().unwrap())
+}
+
+fn take_hash(input: &mut &[u8]) -> Hash {
+    let (hashed_bytes, rest) = input.split_at(20);
+    *input = rest;
+    Hash(hashed_bytes.try_into().unwrap())
+}
+
+fn take_n_bytes(input: &mut &[u8], n: usize) -> Vec<u8> {
+    let (bytes, rest) = input.split_at(n);
+    *input = rest;
+    bytes.to_vec()
 }
 
 fn timestamp_to_date(seconds: u32, nanoseconds: u32) -> String {
@@ -99,9 +144,9 @@ impl Index {
     }
 
     fn parse_header(mut bytes: &[u8]) -> IndexHeader {
-        let signature = Self::take_u32(&mut bytes);
-        let version = Self::take_u32(&mut bytes);
-        let num_entries = Self::take_u32(&mut bytes);
+        let signature = take_u32(&mut bytes);
+        let version = take_u32(&mut bytes);
+        let num_entries = take_u32(&mut bytes);
 
         IndexHeader { signature, version, num_entries }
     }
@@ -109,70 +154,18 @@ impl Index {
     fn parse_entries(mut bytes: &[u8], num_entries: usize) -> Vec<IndexEntry> {
         let mut entries = Vec::with_capacity(num_entries);
 
-        for i in 0..num_entries {
-            let ctime_sec  = Self::take_u32(&mut bytes);
-            let ctime_nano = Self::take_u32(&mut bytes);
-            let mtime_sec  = Self::take_u32(&mut bytes);
-            let mtime_nano = Self::take_u32(&mut bytes);
-            let dev        = Self::take_u32(&mut bytes);
-            let ino        = Self::take_u32(&mut bytes);
-            let mode       = Self::take_u32(&mut bytes);
-            let uid        = Self::take_u32(&mut bytes);
-            let gid        = Self::take_u32(&mut bytes);
-            let size       = Self::take_u32(&mut bytes);
-            let key        = Self::take_hash(&mut bytes);
-            let flags      = Self::take_u16(&mut bytes);
-            let name_len: usize = (flags & 0x0FFF).into();
-            let name_bytes = Self::take_n_bytes(&mut bytes, name_len);
-            let name = String::from_utf8(name_bytes)
-                .expect("ERROR: Unable to read file name");
-            // 1-8 nul bytes as necessary to pad the entry to a multiple of eight bytes 
-            // while keeping the name NUL-terminated.
-            let padding_len = 8 - ((6+name_len) % 8);
-            let padding = Self::take_n_bytes(&mut bytes, padding_len);
+        for _ in 0..num_entries {
+            let entry = IndexEntry::read(&mut bytes);
 
-            entries.push(IndexEntry {
-                ctime_sec,
-                ctime_nano,
-                mtime_sec,
-                mtime_nano,
-                dev,
-                ino,
-                mode,
-                uid,
-                gid,
-                size,
-                key,
-                flags,
-                name
-            });
+            // Pad 1-8 nul bytes as necessary to pad the entry 
+            // to a multiple of eight bytes 
+            let padding_len = 8 - ((6 + entry.name_len()) % 8);
+            take_n_bytes(&mut bytes, padding_len);
+
+            entries.push(entry);
         }
 
         entries
-    }
-
-    fn take_u16(input: &mut &[u8]) -> u16 {
-        let (int_bytes, rest) = input.split_at(size_of::<u16>());
-        *input = rest;
-        u16::from_be_bytes(int_bytes.try_into().unwrap())
-    }
-
-    fn take_u32(input: &mut &[u8]) -> u32 {
-        let (int_bytes, rest) = input.split_at(size_of::<u32>());
-        *input = rest;
-        u32::from_be_bytes(int_bytes.try_into().unwrap())
-    }
-
-    fn take_hash(input: &mut &[u8]) -> Hash {
-        let (hashed_bytes, rest) = input.split_at(20);
-        *input = rest;
-        Hash(hashed_bytes.try_into().unwrap())
-    }
-
-    fn take_n_bytes(input: &mut &[u8], n: usize) -> Vec<u8> {
-        let (bytes, rest) = input.split_at(n);
-        *input = rest;
-        bytes.to_vec()
     }
 }
 
@@ -226,6 +219,82 @@ struct IndexEntry {
 }
 
 impl IndexEntry {
+    fn create(key: Hash, filename: &String) -> Self{
+        let stat = fs::metadata(filename).unwrap();
+
+        let ctime_sec  = stat.ctime() as u32;
+        let ctime_nano = stat.ctime_nsec() as u32;
+        let mtime_sec  = stat.mtime() as u32;
+        let mtime_nano = stat.mtime_nsec() as u32;
+        let dev        = stat.dev() as u32;
+        let ino        = stat.ino() as u32;
+        let mode       = (1000 & 0xFFF) << 12 | 0o0644 & 0xFFF; // We only support this for now
+        let uid        = stat.uid() as u32;
+        let gid        = stat.gid() as u32;
+        let size       = stat.len() as u32;
+        let flags      = filename.len() as u16;
+        let name = filename.clone();
+
+        IndexEntry {
+            ctime_sec,
+            ctime_nano,
+            mtime_sec,
+            mtime_nano,
+            dev,
+            ino,
+            mode,
+            uid,
+            gid,
+            size,
+            key,
+            flags,
+            name
+        }
+    }
+
+    fn read(bytes: &mut &[u8]) -> Self {
+        let ctime_sec  = take_u32(bytes);
+        let ctime_nano = take_u32(bytes);
+        let mtime_sec  = take_u32(bytes);
+        let mtime_nano = take_u32(bytes);
+        let dev        = take_u32(bytes);
+        let ino        = take_u32(bytes);
+        let mode       = take_u32(bytes);
+        let uid        = take_u32(bytes);
+        let gid        = take_u32(bytes);
+        let size       = take_u32(bytes);
+        let key        = take_hash(bytes);
+        let flags      = take_u16(bytes);
+        let name_len = Self::name_len_from_flags(flags);
+        let name_bytes = take_n_bytes(bytes, name_len);
+        let name = String::from_utf8(name_bytes)
+            .expect("ERROR: Unable to read file name");
+
+        IndexEntry {
+            ctime_sec,
+            ctime_nano,
+            mtime_sec,
+            mtime_nano,
+            dev,
+            ino,
+            mode,
+            uid,
+            gid,
+            size,
+            key,
+            flags,
+            name
+        }
+    }
+
+    fn name_len(&self) -> usize {
+        Self::name_len_from_flags(self.flags)
+    }
+
+    fn name_len_from_flags(flags: u16) -> usize {
+        (flags & 0x0FFF).into()
+    }
+
     fn object_type(self: &Self) -> u32 {
         // First 4 bits
         (self.mode >> 12) & 0x00F
@@ -235,12 +304,11 @@ impl IndexEntry {
         // Final 9 bits
         self.mode & 0x1FF
     }
-
 }
 
 impl fmt::Display for IndexEntry {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:02o}{:04o} {} {}\t{}", 
+        write!(f, "{:02o}{:04o} {} {}       {}", 
             self.object_type(),
             self.permission(),
             self.key,
@@ -278,28 +346,27 @@ mod tests {
     fn sha1_hash() {
         let input = String::from("The quick brown fox jumps over the lazy dog");
 
-        let hashed = Hash::from_string(input);
+        let hashed = Hash::from_string(input).to_string();
 
         let expected = String::from("2fd4e1c67a2d28fced849ee1bb76e7391b93eb12");
-        assert_eq!(hashed.to_string(), expected);
+        assert_eq!(hashed, expected);
     }
 
     #[test]
-    fn hash_object_blob() {
-        let content = String::from("what is up, doc?");
+    fn hash_blob_object() {
+        let content = String::from("what is up, doc?").into_bytes();
 
-        let hashed = Hash::from_blob(&content);
+        let hashed = hash_blob(content).to_string();
 
         let expected = String::from("bd9dbf5aae1a3862dd1526723246b20206e5fc37");
-        assert_eq!(hashed.to_string(), expected);
+        assert_eq!(hashed, expected);
     }
 
-
     #[test]
-    fn parse_index_header() {
-        let filename = "example_index";
+    fn parse_header_from_index() {
+        let filename = String::from("examples/example_index");
 
-        let index = Index::from_blob(filename);
+        let index = Index::from_blob(&filename);
         let bytes: [u8; 4] = index.header.signature.to_be_bytes();
         let actual = str::from_utf8(&bytes).unwrap();
 
@@ -308,10 +375,10 @@ mod tests {
     }
 
     #[test]
-    fn parse_index_entry_hash() {
-        let filename = "example_index";
+    fn parse_entry_hash_from_index() {
+        let filename = String::from("examples/example_index");
 
-        let index = Index::from_blob(filename);
+        let index = Index::from_blob(&filename);
         let key = index.entries[0].key.to_string();
 
         let expected = String::from("ea8c4bf7f35f6f77f75d92ad8ce8349f6e81ddba");
@@ -319,10 +386,10 @@ mod tests {
     }
 
     #[test]
-    fn parse_mode() {
-        let filename = "example_index";
+    fn parse_mode_from_index() {
+        let filename = String::from("examples/example_index");
 
-        let index = Index::from_blob(filename);
+        let index = Index::from_blob(&filename);
         let object_type = index.entries[0].object_type();
         let permission = index.entries[0].permission();
 
@@ -333,14 +400,34 @@ mod tests {
         assert_eq!(permission, expected_permission);
     }
 
-    fn list_entry() {
-        let filename = "example_index";
+    #[test]
+    fn list_entry_from_index() {
+        let filename = String::from("examples/example_index");
 
-        let index = Index::from_blob(filename);
-        let output = index.entries[4].to_string();
+        let index = Index::from_blob(&filename);
+        let output = index.entries[5].to_string();
 
-        let expected = "100644 d5434a005c3a5fb57034b58bc10bb20b8ce88950 0       example_index";
+        let expected = 
+              "100644 d9fa2b8cd651190f6ff5932113491d0a2995b116 0       examples/blob.c";
         assert_eq!(output, expected);
     }
+
+
+
+    #[test]
+    fn create_blob_entry_from_file() {
+        let filename = String::from("examples/blob.c");
+        let contents = fs::read(&filename).unwrap();
+
+        let key = hash_blob(contents);
+
+        let index_entry = IndexEntry::create(key, &filename).to_string();
+
+        let expected = 
+            "100644 d9fa2b8cd651190f6ff5932113491d0a2995b116 0       examples/blob.c";
+
+        assert_eq!(index_entry, expected);
+    }
+
 }
 
