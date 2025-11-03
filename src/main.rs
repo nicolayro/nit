@@ -1,15 +1,26 @@
 use std::{fmt, fs};
 use std::os::unix::fs::MetadataExt;
+use std::str::FromStr;
 
 use sha1::{Sha1, Digest};
 use chrono::DateTime;
 
+use std::io;
+use std::io::prelude::*;
+use flate2::Compression;
+use flate2::read::ZlibDecoder;
+use flate2::read::ZlibEncoder;
+
 fn main() { 
-    let filename = String::from("examples/example_index");
+    let filename =
+        String::from("examples/example_tree");
 
-    let index = Index::from_blob(&filename);
+    let content = fs::read(filename).unwrap();
+    let mut decoded = &decompress(content).unwrap()[..];
+    
+    let tree = Tree::read(&mut decoded);
 
-    for entry in index.entries {
+    for entry in tree.entries {
         println!("{}", entry);
     }
 }
@@ -32,14 +43,23 @@ impl Hash {
     }
 }
 
-enum ObjectMode {
-    File = 100644,
+#[derive(Debug, Copy, Clone)]
+enum ObjectKind {
+    Blob = 100644,
     Tree = 040000
 }
 
-enum ObjectKind {
-    Blob,
-    Tree
+impl FromStr for ObjectKind {
+
+    type Err = ();
+    fn from_str(input: &str) -> Result<Self, Self::Err> {
+        match input {
+            "100644" => Ok(ObjectKind::Blob),
+            "40000"  => Ok(ObjectKind::Tree),
+            _ => panic!("ERROR: Invalid object mode: {}", input)
+        }
+    }
+
 }
 
 impl std::fmt::Display for ObjectKind {
@@ -75,7 +95,6 @@ impl std::fmt::Display for Hash {
     }
 }
 
-
 fn take_u16(input: &mut &[u8]) -> u16 {
     let (int_bytes, rest) = input.split_at(size_of::<u16>());
     *input = rest;
@@ -98,6 +117,20 @@ fn take_n_bytes(input: &mut &[u8], n: usize) -> Vec<u8> {
     let (bytes, rest) = input.split_at(n);
     *input = rest;
     bytes.to_vec()
+}
+
+fn compress(bytes: Vec<u8>) -> io::Result<Vec<u8>> {
+    let mut z = ZlibEncoder::new(&bytes[..], Compression::fast());
+    let mut buffer = Vec::new();
+    z.read_to_end(&mut buffer)?;
+    Ok(buffer)
+}
+
+fn decompress(bytes: Vec<u8>) -> io::Result<Vec<u8>> {
+    let mut z = ZlibDecoder::new(&bytes[..]);
+    let mut out = Vec::new();
+    z.read_to_end(&mut out)?;
+    Ok(out)
 }
 
 fn timestamp_to_date(seconds: u32, nanoseconds: u32) -> String {
@@ -133,7 +166,7 @@ struct IndexHeader {
 }
 
 impl Index {
-    fn from_blob(filename: &str) -> Self {
+    fn from_staged(filename: &str) -> Self {
         let contents = fs::read(filename).unwrap();
         let (hbytes, ebytes) = contents.split_at(12);
 
@@ -228,7 +261,7 @@ impl IndexEntry {
         let mtime_nano = stat.mtime_nsec() as u32;
         let dev        = stat.dev() as u32;
         let ino        = stat.ino() as u32;
-        let mode       = (1000 & 0xFFF) << 12 | 0o0644 & 0xFFF; // We only support this for now
+        let mode       = (1000 & 0xFFF) << 12 | 0o0644 & 0xFFF;
         let uid        = stat.uid() as u32;
         let gid        = stat.gid() as u32;
         let size       = stat.len() as u32;
@@ -336,6 +369,92 @@ impl fmt::Debug for IndexEntry {
 }
 
 
+struct Tree {
+    entries: Vec<TreeEntry>
+}
+
+struct TreeEntry {
+    key: Hash,
+    mode: ObjectKind,
+    name: String,
+}
+
+impl Tree {
+    fn read(bytes: &mut &[u8]) -> Self{
+        Tree::read_header(bytes);
+
+        let mut entries = Vec::new();
+        while let Some(entry) = TreeEntry::read(bytes) {
+            entries.push(entry);
+        };
+
+        Tree { entries }
+    }
+
+    fn read_header(bytes: &mut &[u8]) {
+        if let Some(pos) = bytes.iter().position(|&x| x == 0) {
+            let (content, rest) = bytes.split_at(pos);
+            let data: &str = str::from_utf8(content).unwrap();
+            *bytes = &rest[1..];
+        }
+    }
+
+    fn write_tree(&self) -> Vec<u8> {
+        self.entries
+            .iter()
+            .map(|entry| entry.as_bytes())
+            .flatten()
+            .collect()
+    }
+}
+
+impl TreeEntry {
+    fn read(bytes: &mut &[u8]) -> Option<Self> {
+         if let Some(pos) = bytes.iter().position(|&x| x == 0) {
+             let (content, rest) = bytes.split_at(pos);
+             let data: Vec<&str> = str::from_utf8(content).unwrap()
+                 .split(" ")
+                 .collect();
+
+             let mode: ObjectKind = ObjectKind::from_str(data[0]).unwrap();
+             let name = data[1].parse().unwrap();
+
+             *bytes = &rest[1..];
+
+             let key = take_hash(bytes);
+
+             Some(
+                 TreeEntry {
+                     mode,
+                     name,
+                     key
+                 }
+             )
+         } else {
+             None
+         }
+    }
+
+    fn as_bytes(&self) -> Vec<u8> {
+        let mut bytes = format!(
+            "{:06} {}\0", 
+            self.mode as i32,
+            self.name,
+        ).into_bytes();
+        bytes.extend_from_slice(&self.key.0);
+        bytes
+    }
+}
+
+impl fmt::Display for TreeEntry {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:06} {} {}    {}", 
+            self.mode as i32,
+            self.mode,
+            self.key,
+            self.name)
+    }
+}
 
 
 #[cfg(test)]
@@ -366,7 +485,7 @@ mod tests {
     fn parse_header_from_index() {
         let filename = String::from("examples/example_index");
 
-        let index = Index::from_blob(&filename);
+        let index = Index::from_staged(&filename);
         let bytes: [u8; 4] = index.header.signature.to_be_bytes();
         let actual = str::from_utf8(&bytes).unwrap();
 
@@ -378,7 +497,7 @@ mod tests {
     fn parse_entry_hash_from_index() {
         let filename = String::from("examples/example_index");
 
-        let index = Index::from_blob(&filename);
+        let index = Index::from_staged(&filename);
         let key = index.entries[0].key.to_string();
 
         let expected = String::from("ea8c4bf7f35f6f77f75d92ad8ce8349f6e81ddba");
@@ -389,7 +508,7 @@ mod tests {
     fn parse_mode_from_index() {
         let filename = String::from("examples/example_index");
 
-        let index = Index::from_blob(&filename);
+        let index = Index::from_staged(&filename);
         let object_type = index.entries[0].object_type();
         let permission = index.entries[0].permission();
 
@@ -404,15 +523,13 @@ mod tests {
     fn list_entry_from_index() {
         let filename = String::from("examples/example_index");
 
-        let index = Index::from_blob(&filename);
+        let index = Index::from_staged(&filename);
         let output = index.entries[5].to_string();
 
         let expected = 
               "100644 d9fa2b8cd651190f6ff5932113491d0a2995b116 0       examples/blob.c";
         assert_eq!(output, expected);
     }
-
-
 
     #[test]
     fn create_blob_entry_from_file() {
@@ -429,5 +546,29 @@ mod tests {
         assert_eq!(index_entry, expected);
     }
 
-}
+    #[test]
+    fn parse_entry_hash_from_staging_area() {
+        let filename = String::from("examples/example_tree");
+        let content = fs::read(&filename).unwrap();
+        let mut decoded = &decompress(content).unwrap()[..];
 
+        let index = Tree::read(&mut decoded);
+        let index_entry = index.entries[2].to_string();
+
+        let expected = "100644 blob 4b0f39b054979bb74888c6d5bea8fbb03c0ea5de    example_index";
+        assert_eq!(index_entry, expected);
+    }
+
+    #[test]
+    fn create_tree_hash_from_index() {
+        let filename = String::from("examples/example_tree");
+        let content = fs::read(&filename).unwrap();
+        let mut decoded = &decompress(content).unwrap()[..];
+
+        let tree = Tree::read(&mut decoded).write_tree();
+        let key = hash_tree(tree).to_string();
+        
+        let expected = String::from("f37ef49b903a6db9fa814b04f8226569f6d0f592");
+        assert_eq!(key, expected);
+    }
+}
