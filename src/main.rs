@@ -12,12 +12,10 @@ use flate2::read::ZlibDecoder;
 use flate2::read::ZlibEncoder;
 
 fn main() { 
-    let filename =
-        String::from("examples/example_tree");
-
-    let content = fs::read(filename).unwrap();
+    let filename = String::from("examples/tree");
+    let content = fs::read(&filename).unwrap();
     let mut decoded = &decompress(content).unwrap()[..];
-    
+
     let tree = Tree::read(&mut decoded);
 
     for entry in tree.entries {
@@ -29,6 +27,21 @@ fn main() {
 struct Hash([u8; 20]);
 
 impl Hash {
+    fn from_hex(hash: &str) -> Self {
+        if hash.len() != 40 {
+            panic!("ERROR: Hex encoded hash must be 40 characters, received '{}': {}",
+                hash.len(),
+                hash
+            )
+        }
+        let bytes = match hex::decode(hash) {
+            Ok(b) => b,
+            Err(e) => panic!("ERROR: Invalid hash '{}'", hash)
+        };
+
+        Hash(bytes.try_into().unwrap())
+    }
+
     fn from_string(input: String) -> Self {
         let mut hasher = Sha1::new();
         hasher.update(input);
@@ -42,11 +55,12 @@ impl Hash {
         Hash(hasher.finalize().into())
     }
 }
-
+    
 #[derive(Debug, Copy, Clone)]
 enum ObjectKind {
     Blob = 100644,
-    Tree = 040000
+    Tree = 040000,
+    Commit = 0
 }
 
 impl FromStr for ObjectKind {
@@ -67,6 +81,7 @@ impl std::fmt::Display for ObjectKind {
         match self {
             ObjectKind::Blob => write!(f, "blob"),
             ObjectKind::Tree => write!(f, "tree"),
+            ObjectKind::Commit => write!(f, "commit"),
         }
     }
 }
@@ -74,7 +89,8 @@ impl std::fmt::Display for ObjectKind {
 fn hash_object(object_type: ObjectKind, content: Vec<u8>) -> Hash {
     match object_type {
         ObjectKind::Blob => hash_blob(content),
-        ObjectKind::Tree => hash_tree(content)
+        ObjectKind::Tree => hash_tree(content),
+        ObjectKind::Commit => hash_commit(content)
     }
 
 }
@@ -86,6 +102,11 @@ fn hash_blob(content: Vec<u8>) -> Hash {
 
 fn hash_tree(content: Vec<u8>) -> Hash {
     let header = format!("{} {}\0", ObjectKind::Tree, content.len());
+    Hash::from_bytes(header, content)
+}
+
+fn hash_commit(content: Vec<u8>) -> Hash {
+    let header = format!("{} {}\0", ObjectKind::Commit, content.len());
     Hash::from_bytes(header, content)
 }
 
@@ -166,17 +187,17 @@ struct IndexHeader {
 }
 
 impl Index {
-    fn from_staged(filename: &str) -> Self {
+    fn read(filename: &str) -> Self {
         let contents = fs::read(filename).unwrap();
         let (hbytes, ebytes) = contents.split_at(12);
 
-        let header = Self::parse_header(hbytes);
+        let header = Self::read_header(hbytes);
 
-        let entries = Self::parse_entries(ebytes, header.num_entries as usize);
+        let entries = Self::read_entries(ebytes, header.num_entries as usize);
         Self { header, entries }
     }
 
-    fn parse_header(mut bytes: &[u8]) -> IndexHeader {
+    fn read_header(mut bytes: &[u8]) -> IndexHeader {
         let signature = take_u32(&mut bytes);
         let version = take_u32(&mut bytes);
         let num_entries = take_u32(&mut bytes);
@@ -184,7 +205,7 @@ impl Index {
         IndexHeader { signature, version, num_entries }
     }
 
-    fn parse_entries(mut bytes: &[u8], num_entries: usize) -> Vec<IndexEntry> {
+    fn read_entries(mut bytes: &[u8], num_entries: usize) -> Vec<IndexEntry> {
         let mut entries = Vec::with_capacity(num_entries);
 
         for _ in 0..num_entries {
@@ -441,6 +462,12 @@ impl TreeEntry {
             self.mode as i32,
             self.name,
         ).into_bytes();
+        println!(
+            "{:06} {}\0{}", 
+            self.mode as i32,
+            self.name,
+            self.key
+        );
         bytes.extend_from_slice(&self.key.0);
         bytes
     }
@@ -453,6 +480,119 @@ impl fmt::Display for TreeEntry {
             self.mode,
             self.key,
             self.name)
+    }
+}
+
+struct Stamp {
+    name: String,
+    email: String,
+    timestamp: u32,
+}
+
+impl fmt::Display for Stamp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} <{}> {} +0100", self.name, self.email, self.timestamp)
+    }
+}
+
+struct Commit {
+    tree: Hash,
+    parent: Option<Hash>,
+    author: Stamp,
+    committer: Stamp,
+    message: String,
+}
+
+impl Commit {
+    fn create(
+        tree: Hash, 
+        parent: Option<Hash>, 
+        author: Stamp, 
+        committer: Stamp, 
+        message: String
+    ) -> Self {
+        Commit {
+            tree,
+            parent,
+            author,
+            committer,
+            message
+        }
+
+    }
+
+    fn read(bytes: &mut &[u8]) -> Option<Commit> {
+        Commit::read_header(bytes);
+        let commit = str::from_utf8(bytes).ok()?;
+        let mut lines = commit.lines().peekable();
+
+        let tree = Commit::read_tree(lines.next()?);
+        let parent = if lines.peek()?.starts_with("parent ") {
+            Some(Hash::from_hex(&lines.next()?[7..47]))
+        } else { None } ;
+        let author = Commit::read_author(lines.next()?);
+        let committer = Commit::read_committer(lines.next()?);
+
+        lines.next()?; // Empty line
+        let message = lines.collect::<Vec<&str>>().join("\n");
+
+        Some(
+            Commit {
+                tree,
+                parent,
+                author,
+                committer,
+                message
+            }
+        )
+    }
+
+    fn read_header(bytes: &mut &[u8]) {
+        if let Some(pos) = bytes.iter().position(|&x| x == 0) {
+            take_n_bytes(bytes, pos + 1);
+        }
+    }
+
+    fn read_tree(tree: &str) -> Hash{
+        let hash = &tree["tree ".len()..];
+        Hash::from_hex(&hash[..40])
+    }
+
+    fn read_parent(parent: &str) -> Hash{
+        let hash = &parent["parent ".len()..];
+        Hash::from_hex(&hash[..40])
+    }
+
+    fn read_author(author: &str) -> Stamp {
+        Commit::take_stamp(&author["author ".len()..])
+    }
+
+    fn read_committer(committer: &str) -> Stamp {
+        Commit::take_stamp(&committer["committer ".len()..])
+    }
+
+    fn take_stamp(stamp: &str) -> Stamp {
+        let (name, stamp) = stamp.split_once(" <").unwrap();
+        let (email, stamp) = stamp.split_once("> ").unwrap();
+        let (timestamp, _timezone) = stamp.split_once(" ").unwrap();
+        Stamp {
+            name: name.to_string(),
+            email: email.to_string(),
+            timestamp: timestamp.parse().unwrap(),
+
+        }
+    }
+}
+
+impl fmt::Display for Commit {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "tree {}", self.tree);
+        if let Some(parent) = &self.parent  {
+            writeln!(f, "parent {}", parent);
+        }
+        writeln!(f, "author {}", self.author);
+        writeln!(f, "committer {}", self.committer);
+        write!(f, "\n{}", self.message)
     }
 }
 
@@ -472,6 +612,16 @@ mod tests {
     }
 
     #[test]
+    fn hash_from_hex() {
+        let input = "2fd4e1c67a2d28fced849ee1bb76e7391b93eb12";
+
+        let hash = Hash::from_hex(input).to_string();
+
+        let expected = String::from("2fd4e1c67a2d28fced849ee1bb76e7391b93eb12");
+        assert_eq!(hash, expected);
+    }
+
+    #[test]
     fn hash_blob_object() {
         let content = String::from("what is up, doc?").into_bytes();
 
@@ -482,10 +632,10 @@ mod tests {
     }
 
     #[test]
-    fn parse_header_from_index() {
-        let filename = String::from("examples/example_index");
+    fn read_header_from_index() {
+        let filename = String::from("examples/index");
 
-        let index = Index::from_staged(&filename);
+        let index = Index::read(&filename);
         let bytes: [u8; 4] = index.header.signature.to_be_bytes();
         let actual = str::from_utf8(&bytes).unwrap();
 
@@ -494,10 +644,10 @@ mod tests {
     }
 
     #[test]
-    fn parse_entry_hash_from_index() {
-        let filename = String::from("examples/example_index");
+    fn read_entry_hash_from_index() {
+        let filename = String::from("examples/index");
 
-        let index = Index::from_staged(&filename);
+        let index = Index::read(&filename);
         let key = index.entries[0].key.to_string();
 
         let expected = String::from("ea8c4bf7f35f6f77f75d92ad8ce8349f6e81ddba");
@@ -506,9 +656,9 @@ mod tests {
 
     #[test]
     fn parse_mode_from_index() {
-        let filename = String::from("examples/example_index");
+        let filename = String::from("examples/index");
 
-        let index = Index::from_staged(&filename);
+        let index = Index::read(&filename);
         let object_type = index.entries[0].object_type();
         let permission = index.entries[0].permission();
 
@@ -521,9 +671,9 @@ mod tests {
 
     #[test]
     fn list_entry_from_index() {
-        let filename = String::from("examples/example_index");
+        let filename = String::from("examples/index");
 
-        let index = Index::from_staged(&filename);
+        let index = Index::read(&filename);
         let output = index.entries[5].to_string();
 
         let expected = 
@@ -548,20 +698,20 @@ mod tests {
 
     #[test]
     fn parse_entry_hash_from_staging_area() {
-        let filename = String::from("examples/example_tree");
+        let filename = String::from("examples/tree");
         let content = fs::read(&filename).unwrap();
         let mut decoded = &decompress(content).unwrap()[..];
 
         let index = Tree::read(&mut decoded);
-        let index_entry = index.entries[2].to_string();
+        let index_entry = index.entries[4].to_string();
 
-        let expected = "100644 blob 4b0f39b054979bb74888c6d5bea8fbb03c0ea5de    example_index";
+        let expected = "040000 tree f37ef49b903a6db9fa814b04f8226569f6d0f592    examples";
         assert_eq!(index_entry, expected);
     }
 
     #[test]
     fn create_tree_hash_from_index() {
-        let filename = String::from("examples/example_tree");
+        let filename = String::from("examples/index_with_tree");
         let content = fs::read(&filename).unwrap();
         let mut decoded = &decompress(content).unwrap()[..];
 
@@ -570,5 +720,51 @@ mod tests {
         
         let expected = String::from("f37ef49b903a6db9fa814b04f8226569f6d0f592");
         assert_eq!(key, expected);
+    }
+
+    #[test]
+    fn read_commit_object() {
+        let filename = String::from("examples/commit");
+        let content = fs::read(&filename).unwrap();
+        let mut commit_file = &decompress(content).unwrap()[..];
+        
+        let commit = Commit::read(&mut commit_file).unwrap();
+        assert_eq!(commit.author.name, "Nicolay Roness");
+        assert_eq!(commit.parent.unwrap().to_string(), "c631313b6cc3a747eac28cdb26802678a96b870b");
+        assert_eq!(commit.message, "create blob from file");
+    }
+
+    #[test]
+    fn create_commit_from_tree() {
+        let filename = String::from("examples/tree");
+        let content = fs::read(&filename).unwrap();
+        let mut decoded = &decompress(content).unwrap()[..];
+
+        let key = Hash::from_bytes(String::from(""), decoded.to_vec());
+        let parent = Some(Hash::from_hex("c631313b6cc3a747eac28cdb26802678a96b870b"));
+        let author = Stamp {
+            name: "Nicolay Roness".to_string(),
+            email: "nicolay.caspersen.roness@sparebank1.no".to_string(),
+            timestamp: 1762103153 
+        };
+
+        let committer = Stamp {
+            name: "Nicolay Roness".to_string(),
+            email: "nicolay.caspersen.roness@sparebank1.no".to_string(),
+            timestamp: 1762103153 
+        };
+        let message = String::from("create blob from file");
+        let commit = Commit::create(key, parent, author, committer, message)
+            .to_string();
+
+        let expected =
+            "tree fa1c738cb61be8fe31fa4427b7bb7c5b12fe4151
+parent c631313b6cc3a747eac28cdb26802678a96b870b
+author Nicolay Roness <nicolay.caspersen.roness@sparebank1.no> 1762103153 +0100
+committer Nicolay Roness <nicolay.caspersen.roness@sparebank1.no> 1762103153 +0100
+
+create blob from file";
+
+        assert_eq!(commit, expected);
     }
 }
