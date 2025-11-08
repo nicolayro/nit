@@ -1,26 +1,46 @@
-use std::{fmt, fs};
-use std::os::unix::fs::MetadataExt;
-use std::str::FromStr;
-
-use sha1::{Sha1, Digest};
-use chrono::DateTime;
-
+use std::fmt;
+use std::fs;
 use std::io;
+use std::path::Path;
+
+use std::str::FromStr;
+use std::os::unix::fs::MetadataExt;
+
 use std::io::prelude::*;
+
+use chrono::DateTime;
+use sha1::{Sha1, Digest};
 use flate2::Compression;
 use flate2::read::ZlibDecoder;
-use flate2::read::ZlibEncoder;
+use flate2::write::ZlibEncoder;
+use flate2::write::DeflateEncoder;
 
-fn main() { 
-    let filename = String::from("examples/tree");
-    let content = fs::read(&filename).unwrap();
-    let mut decoded = &decompress(content).unwrap()[..];
+fn main() -> Result<(), io::Error> {
+    //  hash-object
+    // Git add
+    let root = "playground/.nit";
+    //  hash-object
+    let content = fs::read("playground/main.c")?;
 
-    let tree = Tree::read(&mut decoded);
-
-    for entry in tree.entries {
-        println!("{}", entry);
+    //  hash-object  store
+    let blob = hash_blob(content.clone());
+    let path_str = format!("{}/{}", root, blob.to_object_path());
+    let path = Path::new(&path_str);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
     }
+
+    let header = format!("{} {}\0", ObjectKind::Blob, content.len());
+    let compressed = compress_content(header, content)?;
+
+    fs::write(path, compressed).unwrap();
+    //  update-index
+
+    //  write-tree
+    // Git commit
+    //  commit-tree
+
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -53,6 +73,11 @@ impl Hash {
         hasher.update(header);
         hasher.update(content);
         Hash(hasher.finalize().into())
+    }
+
+    fn to_object_path(&self) -> String {
+        let (l1, l2) = self.0.split_at(1);
+        format!("objects/{}/{}", hex::encode(l1), hex::encode(l2))
     }
 }
     
@@ -140,11 +165,17 @@ fn take_n_bytes(input: &mut &[u8], n: usize) -> Vec<u8> {
     bytes.to_vec()
 }
 
+fn compress_content(header: String, data: Vec<u8>) -> Result<Vec<u8>, std::io::Error> {
+    let mut encoder = ZlibEncoder::new(Vec::new(), Compression::fast());
+    encoder.write_all(&header.into_bytes())?;
+    encoder.write_all(&data)?;
+    encoder.finish()
+}
+
 fn compress(bytes: Vec<u8>) -> io::Result<Vec<u8>> {
-    let mut z = ZlibEncoder::new(&bytes[..], Compression::fast());
-    let mut buffer = Vec::new();
-    z.read_to_end(&mut buffer)?;
-    Ok(buffer)
+    let mut encoder = ZlibEncoder::new(Vec::new(), Compression::fast());
+    encoder.write_all(&bytes)?;
+    encoder.finish()
 }
 
 fn decompress(bytes: Vec<u8>) -> io::Result<Vec<u8>> {
@@ -586,12 +617,12 @@ impl Commit {
 
 impl fmt::Display for Commit {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "tree {}", self.tree);
+        writeln!(f, "tree {}", self.tree)?;
         if let Some(parent) = &self.parent  {
-            writeln!(f, "parent {}", parent);
+            writeln!(f, "parent {}", parent)?;
         }
-        writeln!(f, "author {}", self.author);
-        writeln!(f, "committer {}", self.committer);
+        writeln!(f, "author {}", self.author)?;
+        writeln!(f, "committer {}", self.committer)?;
         write!(f, "\n{}", self.message)
     }
 }
@@ -629,6 +660,16 @@ mod tests {
 
         let expected = String::from("bd9dbf5aae1a3862dd1526723246b20206e5fc37");
         assert_eq!(hashed, expected);
+    }
+
+    #[test]
+    fn compress_blob_object() {
+        let content = fs::read("playground/main.c").unwrap();
+        let header = format!("{} {}\0", ObjectKind::Blob, content.len());
+        let compressed = compress_content(header, content).unwrap();
+
+        let expected = fs::read("playground/.git/objects/d2/676eb8d33f7a3c4d3b133f0dad9040b81c5082").unwrap();
+        assert_eq!(compressed, expected);
     }
 
     #[test]
