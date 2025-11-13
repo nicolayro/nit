@@ -2,6 +2,7 @@ use std::fmt;
 use std::fs;
 use std::io;
 use std::path::Path;
+use std::fs::File;
 
 use std::str::FromStr;
 use std::os::unix::fs::MetadataExt;
@@ -38,19 +39,69 @@ fn main() -> Result<(), io::Error> {
     let hash = blob;
     let filename = String::from("main.c");
     let entry = IndexEntry::create(hash, &filename);
+    let mut entries: Vec<IndexEntry> = Vec::new();
+    entries.push(entry);
 
-    IndexHeader {
-        signature: { 'd', 'i', 'r', 'c' },
+    let index_header = IndexHeader {
+        signature: u32::from_be_bytes([ b'd', b'i', b'r', b'c' ]),
         version: 2 as u32,
         num_entries: 1 as u32,
-    }
-    entry.write(".nit/index");
+    };
+    let index = Index {
+        header: index_header,
+        entries: entries
+    };
+
+    let index_bytes = index.to_bytes();
+
+    let mut index = File::create(&String::from(".nit/index"))
+        .expect("ERROR: Unable to open index file");
+    index.write_all(&index_bytes);
     
 
     //  write-tree
+    let filename = String::from(".nit/index");
 
+    let index = Index::read(&filename);
+    let tree = index.to_tree_bytes();
+
+    let key = hash_tree(tree.clone());
+
+    let path_str = format!("{}/{}", root, key.to_object_path());
+    let path = Path::new(&path_str);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let header = format!("{} {}\0", ObjectKind::Tree, tree.len());
+    let compressed = compress_content(header, tree)?;
+    fs::write(path, compressed).unwrap();
 
     // Git commit
+    let content = fs::read(&path).unwrap();
+    let mut decoded = &decompress(content).unwrap()[..];
+
+    let tree = Tree::read(&mut decoded.clone());
+    for entry in tree.entries {
+        println!("{}", entry);
+    }
+
+    let key = Hash::from_bytes(String::from(""), decoded.to_vec());
+    let author = Stamp {
+        name: "Nicolay Roness".to_string(),
+        email: "nicolay.caspersen.roness@sparebank1.no".to_string(),
+        timestamp: 1762103153 
+    };
+
+    let committer = Stamp {
+        name: "Nicolay Roness".to_string(),
+        email: "nicolay.caspersen.roness@sparebank1.no".to_string(),
+        timestamp: 1762103153 
+    };
+    let message = String::from("Initial commit");
+    let commit = Commit::create(key, None, author, committer, message)
+        .to_string();
+
+    println!("{}", commit);
     //  commit-tree
 
     Ok(())
@@ -266,28 +317,51 @@ impl Index {
         entries
     }
 
-    fn write(&self, filename: &String) {
-        let index = File::open(filename).expect("ERROR: Unable to open index file");
+    fn to_bytes(&self) -> Vec<u8> {
+        let mut index_bytes: Vec<u8> = Vec::new();
 
-        index.write_all(self.header.signature.to_be_bytes()).unwrap();
-        index.write_all(self.header.version.to_be_bytes()).unwrap();
-        index.write_all(self.header.num_entries.to_be_bytes()).unwrap();
+        index_bytes.extend_from_slice(&self.header.signature.to_be_bytes());
+        index_bytes.extend_from_slice(&self.header.version.to_be_bytes());
+        index_bytes.extend_from_slice(&self.header.num_entries.to_be_bytes());
 
+        for entry in &self.entries {
+            index_bytes.extend_from_slice(&entry.ctime_sec.to_be_bytes());
+            index_bytes.extend_from_slice(&entry.ctime_nano.to_be_bytes());
+            index_bytes.extend_from_slice(&entry.mtime_sec.to_be_bytes());
+            index_bytes.extend_from_slice(&entry.mtime_nano.to_be_bytes());
+            index_bytes.extend_from_slice(&entry.dev.to_be_bytes());
+            index_bytes.extend_from_slice(&entry.ino.to_be_bytes());
+            index_bytes.extend_from_slice(&entry.mode.to_be_bytes());
+            index_bytes.extend_from_slice(&entry.uid.to_be_bytes());
+            index_bytes.extend_from_slice(&entry.gid.to_be_bytes());
+            index_bytes.extend_from_slice(&entry.size.to_be_bytes());
+            index_bytes.extend_from_slice(&entry.key.0);
+            index_bytes.extend_from_slice(&entry.flags.to_be_bytes());
+            index_bytes.extend_from_slice(&entry.name.as_bytes());
+            let padding_len = 8 - ((6 + entry.name_len()) % 8);
+            for _ in 0..padding_len {
+                index_bytes.push(0);
+            }
 
-        for entry in self.entries {
-            index.write_all(entry.ctime_sec.to_be_bytes()).unwrap();
-            index.write_all(entry.ctime_nano.to_be_bytes()).unwrap();
-            index.write_all(entry.mtime_sec.to_be_bytes()).unwrap();
-            index.write_all(entry.mtime_nano.to_be_bytes()).unwrap();
-            index.write_all(entry.dev.to_be_bytes()).unwrap();
-            index.write_all(entry.ino.to_be_bytes()).unwrap();
-            index.write_all(entry.mode.to_be_bytes()).unwrap();
-            index.write_all(entry.uid.to_be_bytes()).unwrap();
-            index.write_all(entry.gid.to_be_bytes()).unwrap();
-            index.write_all(entry.size.to_be_bytes()).unwrap();
-            index.write_all(entry.key.to_be_bytes()).unwrap();
-            index.write_all(entry.flags.to_be_bytes()).unwrap();
         }
+
+        index_bytes
+    }
+
+
+    fn to_tree_bytes(&self) -> Vec<u8> {
+        let mut tree: Vec<u8> = Vec::new();
+
+        for entry in &self.entries {
+            let mut bytes = format!(
+                "{:06} {}\0", 
+                100644,
+                entry.name,
+            ).into_bytes();
+            bytes.extend_from_slice(&entry.key.0);
+            tree.append(&mut bytes);
+        }
+        tree
     }
 }
 
@@ -350,7 +424,7 @@ impl IndexEntry {
         let mtime_nano = stat.mtime_nsec() as u32;
         let dev        = stat.dev() as u32;
         let ino        = stat.ino() as u32;
-        let mode       = (1000 & 0xFFF) << 12 | 0o0644 & 0xFFF;
+        let mode       = (1000 & 0x00F) << 12 | 0o0644 & 0x1FF;
         let uid        = stat.uid() as u32;
         let gid        = stat.gid() as u32;
         let size       = stat.len() as u32;
@@ -381,7 +455,7 @@ impl IndexEntry {
         let mtime_nano = take_u32(bytes);
         let dev        = take_u32(bytes);
         let ino        = take_u32(bytes);
-        let mode       = take_u32(bytes);
+        let mode       = take_u32(bytes);        
         let uid        = take_u32(bytes);
         let gid        = take_u32(bytes);
         let size       = take_u32(bytes);
@@ -417,12 +491,12 @@ impl IndexEntry {
         (flags & 0x0FFF).into()
     }
 
-    fn object_type(self: &Self) -> u32 {
+    fn object_type(&self) -> u32 {
         // First 4 bits
         (self.mode >> 12) & 0x00F
     }
 
-    fn permission(self: &Self) -> u32 {
+    fn permission(&self) -> u32 {
         // Final 9 bits
         self.mode & 0x1FF
     }
@@ -485,6 +559,7 @@ impl Tree {
             let (content, rest) = bytes.split_at(pos);
             let data: &str = str::from_utf8(content).unwrap();
             *bytes = &rest[1..];
+            println!("{} |", data);
         }
     }
 
@@ -499,29 +574,38 @@ impl Tree {
 
 impl TreeEntry {
     fn read(bytes: &mut &[u8]) -> Option<Self> {
-         if let Some(pos) = bytes.iter().position(|&x| x == 0) {
-             let (content, rest) = bytes.split_at(pos);
-             let data: Vec<&str> = str::from_utf8(content).unwrap()
-                 .split(" ")
-                 .collect();
+        println!("reading entries");
+        if let Some(pos) = bytes.iter().position(|&x| x == 0) {
+            let (content, rest) = bytes.split_at(pos);
+            let data: Vec<&str> = str::from_utf8(content).ok()?
+                .split(" ")
+                .collect();
+            for (i, s) in data.clone().into_iter().enumerate() {
+                println!("{} {}", i, s);
+            }
 
-             let mode: ObjectKind = ObjectKind::from_str(data[0]).unwrap();
-             let name = data[1].parse().unwrap();
+            if data.len() != 2 {
+                println!("finished reading entries");
+                return None;
+            }
 
-             *bytes = &rest[1..];
+            let mode: ObjectKind = ObjectKind::from_str(data[0]).unwrap();
+            let name = data[1].parse().unwrap();
 
-             let key = take_hash(bytes);
+            *bytes = &rest[1..];
 
-             Some(
-                 TreeEntry {
-                     mode,
-                     name,
-                     key
-                 }
-             )
-         } else {
-             None
-         }
+            let key = take_hash(bytes);
+
+            Some(
+                TreeEntry {
+                    mode,
+                    name,
+                    key
+                }
+            )
+        } else {
+            None
+        }
     }
 
     fn as_bytes(&self) -> Vec<u8> {
@@ -530,12 +614,6 @@ impl TreeEntry {
             self.mode as i32,
             self.name,
         ).into_bytes();
-        println!(
-            "{:06} {}\0{}", 
-            self.mode as i32,
-            self.name,
-            self.key
-        );
         bytes.extend_from_slice(&self.key.0);
         bytes
     }
