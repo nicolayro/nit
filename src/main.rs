@@ -16,14 +16,14 @@ use flate2::write::ZlibEncoder;
 use flate2::write::DeflateEncoder;
 
 fn main() -> Result<(), io::Error> {
-    //  hash-object
-    // Git add
-    let root = "playground/.nit";
-    //  hash-object
-    let content = fs::read("playground/main.c")?;
+    let root = ".nit";
 
-    //  hash-object  store
+    // Git add
+    //  hash-object
+    let content = fs::read("main.c")?;
     let blob = hash_blob(content.clone());
+
+    //  -w (store the object)
     let path_str = format!("{}/{}", root, blob.to_object_path());
     let path = Path::new(&path_str);
     if let Some(parent) = path.parent() {
@@ -32,11 +32,24 @@ fn main() -> Result<(), io::Error> {
 
     let header = format!("{} {}\0", ObjectKind::Blob, content.len());
     let compressed = compress_content(header, content)?;
-
     fs::write(path, compressed).unwrap();
+
     //  update-index
+    let hash = blob;
+    let filename = String::from("main.c");
+    let entry = IndexEntry::create(hash, &filename);
+
+    IndexHeader {
+        signature: { 'd', 'i', 'r', 'c' },
+        version: 2 as u32,
+        num_entries: 1 as u32,
+    }
+    entry.write(".nit/index");
+    
 
     //  write-tree
+
+
     // Git commit
     //  commit-tree
 
@@ -251,6 +264,30 @@ impl Index {
         }
 
         entries
+    }
+
+    fn write(&self, filename: &String) {
+        let index = File::open(filename).expect("ERROR: Unable to open index file");
+
+        index.write_all(self.header.signature.to_be_bytes()).unwrap();
+        index.write_all(self.header.version.to_be_bytes()).unwrap();
+        index.write_all(self.header.num_entries.to_be_bytes()).unwrap();
+
+
+        for entry in self.entries {
+            index.write_all(entry.ctime_sec.to_be_bytes()).unwrap();
+            index.write_all(entry.ctime_nano.to_be_bytes()).unwrap();
+            index.write_all(entry.mtime_sec.to_be_bytes()).unwrap();
+            index.write_all(entry.mtime_nano.to_be_bytes()).unwrap();
+            index.write_all(entry.dev.to_be_bytes()).unwrap();
+            index.write_all(entry.ino.to_be_bytes()).unwrap();
+            index.write_all(entry.mode.to_be_bytes()).unwrap();
+            index.write_all(entry.uid.to_be_bytes()).unwrap();
+            index.write_all(entry.gid.to_be_bytes()).unwrap();
+            index.write_all(entry.size.to_be_bytes()).unwrap();
+            index.write_all(entry.key.to_be_bytes()).unwrap();
+            index.write_all(entry.flags.to_be_bytes()).unwrap();
+        }
     }
 }
 
@@ -758,7 +795,7 @@ mod tests {
 
         let tree = Tree::read(&mut decoded).write_tree();
         let key = hash_tree(tree).to_string();
-        
+
         let expected = String::from("f37ef49b903a6db9fa814b04f8226569f6d0f592");
         assert_eq!(key, expected);
     }
