@@ -17,7 +17,7 @@ use flate2::write::ZlibEncoder;
 use flate2::write::DeflateEncoder;
 
 fn main() -> Result<(), io::Error> {
-    let root = ".nit";
+    let root = ".git";
 
     // Git add
     //  hash-object
@@ -43,7 +43,7 @@ fn main() -> Result<(), io::Error> {
     entries.push(entry);
 
     let index_header = IndexHeader {
-        signature: u32::from_be_bytes([ b'd', b'i', b'r', b'c' ]),
+        signature: u32::from_be_bytes([ b'D', b'I', b'R', b'C' ]),
         version: 2 as u32,
         num_entries: 1 as u32,
     };
@@ -54,13 +54,13 @@ fn main() -> Result<(), io::Error> {
 
     let index_bytes = index.to_bytes();
 
-    let mut index = File::create(&String::from(".nit/index"))
+    let mut index = File::create(&String::from(".git/index"))
         .expect("ERROR: Unable to open index file");
     index.write_all(&index_bytes);
     
 
     //  write-tree
-    let filename = String::from(".nit/index");
+    let filename = String::from(".git/index");
 
     let index = Index::read(&filename);
     let tree = index.to_tree_bytes();
@@ -86,6 +86,7 @@ fn main() -> Result<(), io::Error> {
     }
 
     let key = Hash::from_bytes(String::from(""), decoded.to_vec());
+    let parent = Hash::from_hex("1305b699328eb20a3e0aed739c0ff05fffee698c");
     let author = Stamp {
         name: "Nicolay Roness".to_string(),
         email: "nicolay.caspersen.roness@sparebank1.no".to_string(),
@@ -97,12 +98,14 @@ fn main() -> Result<(), io::Error> {
         email: "nicolay.caspersen.roness@sparebank1.no".to_string(),
         timestamp: 1762103153 
     };
-    let message = String::from("Initial commit");
-    let commit = Commit::create(key, None, author, committer, message)
+    let message = String::from("Make a commit");
+    let commit = Commit::create(key, Some(parent), author, committer, message)
         .to_string();
-
     println!("{}", commit);
-    //  commit-tree
+
+    // Store commit
+    // Update refs
+
 
     Ok(())
 }
