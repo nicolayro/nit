@@ -16,6 +16,9 @@ use flate2::read::ZlibDecoder;
 use flate2::write::ZlibEncoder;
 use flate2::write::DeflateEncoder;
 
+use std::time::SystemTime;
+
+
 fn main() -> Result<(), io::Error> {
     let root = ".git";
 
@@ -86,26 +89,51 @@ fn main() -> Result<(), io::Error> {
     }
 
     let key = Hash::from_bytes(String::from(""), decoded.to_vec());
-    let parent = Hash::from_hex("1305b699328eb20a3e0aed739c0ff05fffee698c");
+    let parent_hex = fs::read_to_string(".git/refs/heads/test").unwrap();
+    let parent = Hash::from_hex(&parent_hex[..40]);
     let author = Stamp {
         name: "Nicolay Roness".to_string(),
         email: "nicolay.caspersen.roness@sparebank1.no".to_string(),
-        timestamp: 1762103153 
+        timestamp: SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as u32
     };
 
     let committer = Stamp {
         name: "Nicolay Roness".to_string(),
         email: "nicolay.caspersen.roness@sparebank1.no".to_string(),
-        timestamp: 1762103153 
+        timestamp: SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as u32
     };
     let message = String::from("Make a commit");
     let commit = Commit::create(key, Some(parent), author, committer, message)
         .to_string();
+    
     println!("{}", commit);
 
     // Store commit
-    // Update refs
+    let commit_content = format!("{}", commit).into_bytes();
+    let key = hash_commit(commit_content.clone());
+    let path_str = format!("{}/{}", root, key.to_object_path());
+    let path = Path::new(&path_str);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let header = format!("{} {}\0", ObjectKind::Commit, commit_content.len());
+    let compressed = compress_content(header, commit_content)?;
+    println!("Writing commit to {}", key.to_object_path());
+    fs::write(path, compressed).unwrap();
 
+    // Update refs
+    let path_str = ".git/refs/heads/test";
+    let path = Path::new(&path_str);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(path, format!("{}", key)).unwrap();
 
     Ok(())
 }
@@ -184,7 +212,6 @@ fn hash_object(object_type: ObjectKind, content: Vec<u8>) -> Hash {
         ObjectKind::Tree => hash_tree(content),
         ObjectKind::Commit => hash_commit(content)
     }
-
 }
 
 fn hash_blob(content: Vec<u8>) -> Hash {
@@ -741,7 +768,7 @@ impl fmt::Display for Commit {
         }
         writeln!(f, "author {}", self.author)?;
         writeln!(f, "committer {}", self.committer)?;
-        write!(f, "\n{}", self.message)
+        writeln!(f, "\n{}", self.message)
     }
 }
 
@@ -890,7 +917,7 @@ mod tests {
         let commit = Commit::read(&mut commit_file).unwrap();
         assert_eq!(commit.author.name, "Nicolay Roness");
         assert_eq!(commit.parent.unwrap().to_string(), "c631313b6cc3a747eac28cdb26802678a96b870b");
-        assert_eq!(commit.message, "create blob from file");
+        assert_eq!(commit.message, "create blob from file\n");
     }
 
     #[test]
@@ -922,7 +949,7 @@ parent c631313b6cc3a747eac28cdb26802678a96b870b
 author Nicolay Roness <nicolay.caspersen.roness@sparebank1.no> 1762103153 +0100
 committer Nicolay Roness <nicolay.caspersen.roness@sparebank1.no> 1762103153 +0100
 
-create blob from file";
+create blob from file\n";
 
         assert_eq!(commit, expected);
     }
