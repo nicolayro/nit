@@ -2,6 +2,6 @@
 
 int main()
 {
-    printf("Hello, Blob!\n");
+    printf("Hello, Commit!\n");
     return 0;
 }
