@@ -1,9 +1,11 @@
-use std::fmt;
 use std::fs;
 use std::io;
+use std::io::{Write};
+
 use std::path::Path;
 use std::fs::File;
 
+<<<<<<< Updated upstream
 use std::str::FromStr;
 use std::os::unix::fs::MetadataExt;
 
@@ -18,14 +20,36 @@ use flate2::write::DeflateEncoder;
 
 fn main() -> Result<(), io::Error> {
     let root = ".git";
+=======
+use std::time::SystemTime;
 
-    // Git add
+mod compress;
+mod commit;
+mod object;
+mod hash;
+mod index;
+mod tree;
+mod util;
+
+use compress::*;
+use commit::*;
+use hash::*;
+// use tree::*;
+use index::*;
+use util::*;
+use object::*;
+>>>>>>> Stashed changes
+
+const ROOT: &str   = ".git";
+const BRANCH: &str = "refs";
+
+fn add(file: &str) -> Result<Hash, io::Error> {
     //  hash-object
-    let content = fs::read("main.c")?;
+    let content = fs::read(file)?;
     let blob = hash_blob(content.clone());
 
     //  -w (store the object)
-    let path_str = format!("{}/{}", root, blob.to_object_path());
+    let path_str = format!("{}/{}", ROOT, blob.to_object_path());
     let path = Path::new(&path_str);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
@@ -35,51 +59,49 @@ fn main() -> Result<(), io::Error> {
     let compressed = compress_content(header, content)?;
     fs::write(path, compressed).unwrap();
 
-    //  update-index
-    let hash = blob;
-    let filename = String::from("main.c");
-    let entry = IndexEntry::create(hash, &filename);
-    let mut entries: Vec<IndexEntry> = Vec::new();
-    entries.push(entry);
+    Ok(blob)
+}
 
+fn write_index(entries: Vec<IndexEntry>) -> Result<(), io::Error> {
     let index_header = IndexHeader {
         signature: u32::from_be_bytes([ b'D', b'I', b'R', b'C' ]),
         version: 2 as u32,
-        num_entries: 1 as u32,
+        num_entries: entries.len() as u32,
     };
+
     let index = Index {
         header: index_header,
         entries: entries
     };
 
     let index_bytes = index.to_bytes();
+    let index_path = format!("{}/index", ROOT);
+    let mut index = File::create(&String::from(index_path))?;
+    index.write_all(&index_bytes)?;
+    Ok(())
+}
 
-    let mut index = File::create(&String::from(".git/index"))
-        .expect("ERROR: Unable to open index file");
-    index.write_all(&index_bytes);
-    
-
-    //  write-tree
-    let filename = String::from(".git/index");
+fn write_tree() -> Result<Hash, io::Error> {
+    let filename = format!("{}/index", ROOT);
 
     let index = Index::read(&filename);
     let tree = index.to_tree_bytes();
 
     let key = hash_tree(tree.clone());
 
-    let path_str = format!("{}/{}", root, key.to_object_path());
+    let path_str = format!("{}/{}", ROOT, key.to_object_path());
     let path = Path::new(&path_str);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
     let header = format!("{} {}\0", ObjectKind::Tree, tree.len());
     let compressed = compress_content(header, tree)?;
-    fs::write(path, compressed).unwrap();
+    fs::write(path, compressed)?;
 
-    // Git commit
-    let content = fs::read(&path).unwrap();
-    let mut decoded = &decompress(content).unwrap()[..];
+    Ok(key)
+}
 
+<<<<<<< Updated upstream
     let tree = Tree::read(&mut decoded.clone());
     for entry in tree.entries {
         println!("{}", entry);
@@ -91,6 +113,20 @@ fn main() -> Result<(), io::Error> {
         name: "Nicolay Roness".to_string(),
         email: "nicolay.caspersen.roness@sparebank1.no".to_string(),
         timestamp: 1762103153 
+=======
+fn commit(tree: Vec<u8>) -> Result<Commit, io::Error> {
+    let key = Hash::from_bytes(String::from(""), tree);
+    let path = format!("{}/refs/heads/{}", ROOT, BRANCH);
+    let parent_hex = fs::read_to_string(path)?;
+    let parent = Hash::from_hex(&parent_hex[..40]);
+    let author = Stamp {
+        name: "Nicolay Roness".to_string(),
+        email: "nicolay.caspersen.roness@sparebank1.no".to_string(),
+        timestamp: SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as u32 - 5 * 86400
+>>>>>>> Stashed changes
     };
 
     let committer = Stamp {
@@ -99,6 +135,7 @@ fn main() -> Result<(), io::Error> {
         timestamp: 1762103153 
     };
     let message = String::from("Make a commit");
+<<<<<<< Updated upstream
     let commit = Commit::create(key, Some(parent), author, committer, message)
         .to_string();
     println!("{}", commit);
@@ -107,67 +144,81 @@ fn main() -> Result<(), io::Error> {
     // Update refs
 
 
+=======
+    let commit = Commit::create(key, Some(parent), author, committer, message);
+
+    Ok(commit)
+}
+
+fn read_tree(tree_hash: Hash) -> Result<Vec<u8>, io::Error> {
+    let path_str = format!("{}/{}", ROOT, tree_hash.to_object_path());
+    let path = Path::new(&path_str);
+    let content = fs::read(&path).unwrap();
+    let decoded = &decompress(content).unwrap()[..];
+
+    Ok(decoded.to_vec())
+}
+
+fn store_commit(commit: Commit) -> Result<Hash, io::Error> {
+    let commit_content = format!("{}", commit).into_bytes();
+    let hash = hash_commit(commit_content.clone());
+    let path_str = format!("{}/{}", ROOT, hash.to_object_path());
+    let path = Path::new(&path_str);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let header = format!("{} {}\0", ObjectKind::Commit, commit_content.len());
+    let compressed = compress_content(header, commit_content)?;
+    println!("Writing commit to {}", hash.to_object_path());
+    fs::write(path, compressed).unwrap();
+
+    Ok(hash)
+}
+
+fn update_refs(commit: Hash) -> Result<(), io::Error> {
+    let path_str = format!("{}/refs/heads/{}", ROOT, BRANCH);
+    let path = Path::new(&path_str);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(path, format!("{}", commit))?;
+>>>>>>> Stashed changes
     Ok(())
 }
 
-#[derive(Debug)]
-struct Hash([u8; 20]);
+fn main() {
+    let dir = ["main.c", "main.h"];
 
-impl Hash {
-    fn from_hex(hash: &str) -> Self {
-        if hash.len() != 40 {
-            panic!("ERROR: Hex encoded hash must be 40 characters, received '{}': {}",
-                hash.len(),
-                hash
-            )
-        }
-        let bytes = match hex::decode(hash) {
-            Ok(b) => b,
-            Err(e) => panic!("ERROR: Invalid hash '{}'", hash)
-        };
-
-        Hash(bytes.try_into().unwrap())
-    }
-
-    fn from_string(input: String) -> Self {
-        let mut hasher = Sha1::new();
-        hasher.update(input);
-        Hash(hasher.finalize().into())
-    }
-
-    fn from_bytes(header: String, content: Vec<u8>) -> Self {
-        let mut hasher = Sha1::new();
-        hasher.update(header);
-        hasher.update(content);
-        Hash(hasher.finalize().into())
-    }
-
-    fn to_object_path(&self) -> String {
-        let (l1, l2) = self.0.split_at(1);
-        format!("objects/{}/{}", hex::encode(l1), hex::encode(l2))
-    }
-}
-    
-#[derive(Debug, Copy, Clone)]
-enum ObjectKind {
-    Blob = 100644,
-    Tree = 040000,
-    Commit = 0
-}
-
-impl FromStr for ObjectKind {
-
-    type Err = ();
-    fn from_str(input: &str) -> Result<Self, Self::Err> {
-        match input {
-            "100644" => Ok(ObjectKind::Blob),
-            "40000"  => Ok(ObjectKind::Tree),
-            _ => panic!("ERROR: Invalid object mode: {}", input)
+    // Create objects and write index
+    let mut entries: Vec<IndexEntry> = Vec::new();
+    for file in dir {
+        let hash = add(file);
+        match hash {
+            Ok(hash) => {
+                let entry = IndexEntry::create(hash, file);
+                entries.push(entry);
+            },
+            Err(err) => println!("Error adding {}: {}", file, err)
         }
     }
+    write_index(entries).unwrap();
 
+    //  write-tree
+    let tree_hash = write_tree().unwrap();
+
+    // Git commit
+    let tree = read_tree(tree_hash).unwrap();
+    let commit = commit(tree).unwrap();
+    println!("{}", commit);
+
+    // Store commit
+    let commit_hash = store_commit(commit).unwrap();
+
+    // Update refs
+    update_refs(commit_hash).unwrap();
 }
 
+<<<<<<< Updated upstream
 impl std::fmt::Display for ObjectKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -746,6 +797,8 @@ impl fmt::Display for Commit {
 }
 
 
+=======
+>>>>>>> Stashed changes
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -842,12 +895,12 @@ mod tests {
 
     #[test]
     fn create_blob_entry_from_file() {
-        let filename = String::from("examples/blob.c");
-        let contents = fs::read(&filename).unwrap();
+        let filename = "examples/blob.c";
+        let contents = fs::read(filename).unwrap();
 
         let key = hash_blob(contents);
 
-        let index_entry = IndexEntry::create(key, &filename).to_string();
+        let index_entry = IndexEntry::create(key, filename).to_string();
 
         let expected = 
             "100644 d9fa2b8cd651190f6ff5932113491d0a2995b116 0       examples/blob.c";
@@ -855,6 +908,7 @@ mod tests {
         assert_eq!(index_entry, expected);
     }
 
+<<<<<<< Updated upstream
     #[test]
     fn parse_entry_hash_from_staging_area() {
         let filename = String::from("examples/tree");
@@ -926,4 +980,6 @@ create blob from file";
 
         assert_eq!(commit, expected);
     }
+=======
+>>>>>>> Stashed changes
 }
