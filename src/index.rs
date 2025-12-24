@@ -277,3 +277,73 @@ impl std::fmt::Debug for IndexEntry {
     }
 }
 
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::hash_blob;
+
+    #[test]
+    fn read_header_from_index() {
+        let filename = String::from("examples/index");
+
+        let index = Index::read(&filename);
+        let bytes: [u8; 4] = index.header.signature.to_be_bytes();
+        let actual = str::from_utf8(&bytes).unwrap();
+
+        let expected = "DIRC";
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn read_entry_hash_from_index() {
+        let filename = String::from("examples/index");
+
+        let index = Index::read(&filename);
+        let key = index.entries[0].key.to_string();
+
+        let expected = String::from("ea8c4bf7f35f6f77f75d92ad8ce8349f6e81ddba");
+        assert_eq!(key, expected);
+    }
+
+    #[test]
+    fn parse_mode_from_index() {
+        let filename = String::from("examples/index");
+
+        let index = Index::read(&filename);
+        let object_type = index.entries[0].object_type();
+        let permission = index.entries[0].permission();
+
+        let expected_type = 0o10;
+        let expected_permission = 0o0644;
+
+        assert_eq!(object_type, expected_type);
+        assert_eq!(permission, expected_permission);
+    }
+
+    #[test]
+    fn list_entry_from_index() {
+        let filename = String::from("examples/index");
+
+        let index = Index::read(&filename);
+        let output = index.entries[5].to_string();
+
+        let expected = 
+              "100644 d9fa2b8cd651190f6ff5932113491d0a2995b116 0       examples/blob.c";
+        assert_eq!(output, expected);
+    }
+
+    #[test]
+    fn create_blob_entry_from_file() {
+        let filename = "examples/blob.c";
+        let contents = fs::read(filename).unwrap();
+
+        let key = hash_blob(contents);
+
+        let index_entry = IndexEntry::create(key, filename).to_string();
+
+        let expected = 
+            "100644 d9fa2b8cd651190f6ff5932113491d0a2995b116 0       examples/blob.c";
+
+        assert_eq!(index_entry, expected);
+    }
+}

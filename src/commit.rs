@@ -118,9 +118,12 @@ impl fmt::Display for Commit {
 }
 
 
+
 #[cfg(test)]
-mod tests {
+mod test {
+    use super::*;
     use std::fs;
+    use crate::compress::*;
 
     #[test]
     fn read_commit_object() {
@@ -134,7 +137,7 @@ mod tests {
         assert_eq!(commit.message, "create blob from file\n");
     }
 
-#[test]
+    #[test]
     fn create_commit_from_tree() {
         let filename = String::from("examples/commit_tree");
         let content = fs::read(&filename).unwrap();
@@ -159,14 +162,12 @@ mod tests {
 
         let expected =
             "tree b03318345a1f9d098d0bfa44d6111818ab701fbe
-            parent f60b322c7351b08514fceed6f69102138ab420e7
-            author Nicolay Roness <nicolay.caspersen.roness@sparebank1.no> 1764365370 +0100
-            committer Nicolay Roness <nicolay.caspersen.roness@sparebank1.no> 1764365370 +0100
+parent f60b322c7351b08514fceed6f69102138ab420e7
+author Nicolay Roness <nicolay.caspersen.roness@sparebank1.no> 1764365370 +0100
+committer Nicolay Roness <nicolay.caspersen.roness@sparebank1.no> 1764365370 +0100
 
-            det virker!\n";
-        assert_eq!(0, 1);
+det virker!\n";
         assert_eq!(commit, expected);
-
     }
 }
 

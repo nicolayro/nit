@@ -13,16 +13,10 @@ impl Hash {
         }
         let bytes = match hex::decode(hash) {
             Ok(b) => b,
-            Err(e) => panic!("ERROR: Invalid hash '{}'", hash)
+            Err(err) => panic!("ERROR: Invalid hash '{}': {}", hash, err)
         };
 
         Hash(bytes.try_into().unwrap())
-    }
-
-    pub fn from_string(input: String) -> Self {
-        let mut hasher = Sha1::new();
-        hasher.update(input);
-        Hash(hasher.finalize().into())
     }
 
     pub fn from_bytes(header: String, content: Vec<u8>) -> Self {
@@ -42,5 +36,30 @@ impl Hash {
 impl std::fmt::Display for Hash {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", hex::encode(self.0))
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn sha1_hash() {
+        let input = String::from("The quick brown fox jumps over the lazy dog");
+
+        let hashed = Hash::from_bytes(String::from(""), input.into_bytes()).to_string();
+
+        let expected = String::from("2fd4e1c67a2d28fced849ee1bb76e7391b93eb12");
+        assert_eq!(hashed, expected);
+    }
+
+    #[test]
+    fn hash_from_hex() {
+        let input = "2fd4e1c67a2d28fced849ee1bb76e7391b93eb12";
+
+        let hash = Hash::from_hex(input).to_string();
+
+        let expected = String::from("2fd4e1c67a2d28fced849ee1bb76e7391b93eb12");
+        assert_eq!(hash, expected);
     }
 }
