@@ -1,10 +1,9 @@
 use std::path::{Path, PathBuf};
 
-pub const IGNORE: [&str; 5] = [
+pub const IGNORE: [&str; 4] = [
     ".git",
     ".nit",
     "playground",
-    "examples",
     "target",
 ];
 
@@ -137,7 +136,4 @@ mod test {
         assert_eq!(files, expected);
     }
 
-    #[test]
-    fn get_directory_name_from_entries() {
-    }
 }

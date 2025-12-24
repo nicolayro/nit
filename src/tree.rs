@@ -1,49 +1,22 @@
 use crate::hash::*;
 use crate::object::*;
+use crate::index::*;
 use crate::take_hash;
 
 use std::fmt;
 
 use std::str::FromStr;
-use std::path::PathBuf;
+use std::path::{PathBuf, Component};
+use std::collections::HashMap;
 
 pub struct Tree {
     pub entries: Vec<TreeEntry>
 }
 
-
 #[derive(Debug)]
-struct Cache {
-    blobs: Vec<TreeEntry>,
-    trees: HashMap<PathBuf, Cache>
-}
-
-impl Cache {
-    pub fn new() -> Self {
-        Self {
-            blobs: Vec::new(),
-            trees: HashMap::new()
-        }
-    }
-}
-
-impl Cache {
-    fn update(&mut self, entry: TreeEntry) {
-        let path = PathBuf::from(&entry.name);
-        let components: Vec<Component> = path.components().collect();
-        if components.len() > 1 {
-            let (base, rest) = components.split_first().expect("ERROR: Split first should always work in len > 1");
-            let base: PathBuf = base.into();
-            let rest: PathBuf = rest.iter().collect();
-
-            let entry = TreeEntry::new(entry.key, entry.mode, rest);
-            let sub_cache = self.trees.entry(base).or_insert(Cache::new());
-            sub_cache.update(entry); 
-        } else {
-            let blob = TreeEntry::new(entry.key, ObjectKind::Blob, entry.name);
-            self.blobs.push(blob);
-        }
-    }
+pub struct TreeCache {
+    pub blobs: Vec<TreeEntry>,
+    pub trees: HashMap<PathBuf, TreeCache>
 }
 
 #[derive(Debug)]
@@ -54,23 +27,23 @@ pub struct TreeEntry {
 }
 
 impl Tree {
-    pub fn create() -> Self {
+    pub fn _new() -> Self {
         let entries = Vec::new();
         Self { entries }
     }
 
-    pub fn read(bytes: &mut &[u8]) -> Self{
-        Tree::read_header(bytes);
+    pub fn _read(bytes: &mut &[u8]) -> Self{
+        Tree::_read_header(bytes);
 
         let mut entries = Vec::new();
-        while let Some(entry) = TreeEntry::read(bytes) {
+        while let Some(entry) = TreeEntry::_read(bytes) {
             entries.push(entry);
         };
 
         Tree { entries }
     }
 
-    pub fn read_header(bytes: &mut &[u8]) {
+    pub fn _read_header(bytes: &mut &[u8]) {
         if let Some(pos) = bytes.iter().position(|&x| x == 0) {
             let (content, rest) = bytes.split_at(pos);
             let data: &str = str::from_utf8(content).unwrap();
@@ -79,7 +52,7 @@ impl Tree {
         }
     }
 
-    pub fn to_bytes(&self) -> Vec<u8> {
+    pub fn _to_bytes(&self) -> Vec<u8> {
         self.entries
             .iter()
             .map(|entry| entry.as_bytes())
@@ -93,7 +66,7 @@ impl TreeEntry {
         TreeEntry { key, mode, name }
     }
 
-    pub fn read(bytes: &mut &[u8]) -> Option<Self> {
+    pub fn _read(bytes: &mut &[u8]) -> Option<Self> {
         if let Some(pos) = bytes.iter().position(|&x| x == 0) {
             let (content, rest) = bytes.split_at(pos);
             let data: Vec<&str> = str::from_utf8(content).ok()?
@@ -143,6 +116,64 @@ impl fmt::Display for TreeEntry {
     }
 }
 
+impl TreeCache {
+    pub fn new() -> Self {
+        Self {
+            blobs: Vec::new(),
+            trees: HashMap::new()
+        }
+    }
+
+    pub fn from_index(index: Index) -> Self {
+        let mut cache = TreeCache::new();
+
+        for entry in index.entries {
+            let path = PathBuf::from(&entry.name);
+            let components: Vec<Component> = path.components().collect();
+            if components.len() > 1 {
+                let (base, rest) = components.split_first().expect("ERROR: Split first should always work in len > 1");
+                let base: PathBuf = base.into();
+                let rest: PathBuf = rest.iter().collect();
+
+                let sub_cache = cache.get_or_create_tree_mut(base);
+
+                let entry = TreeEntry::new(entry.key, ObjectKind::Blob, rest);
+                sub_cache.add_tree(entry); 
+            } else {
+                let blob = TreeEntry::new(entry.key, ObjectKind::Blob, entry.name.into());
+                cache.add_blob(blob);
+            }
+        }
+
+        cache
+    }
+
+    pub fn get_or_create_tree_mut(&mut self, tree_name: PathBuf) -> &mut TreeCache {
+        self.trees.entry(tree_name).or_insert(TreeCache::new())
+    }
+
+    pub fn add_blob(&mut self, entry: TreeEntry) {
+        self.blobs.push(entry);
+    }
+
+    pub fn add_tree(&mut self, entry: TreeEntry) {
+        let path = PathBuf::from(&entry.name);
+        let components: Vec<Component> = path.components().collect();
+        if components.len() > 1 {
+            let (base, rest) = components.split_first().expect("ERROR: Split first should always work in len > 1");
+            let base: PathBuf = base.into();
+            let rest: PathBuf = rest.iter().collect();
+
+            let entry = TreeEntry::new(entry.key, entry.mode, rest);
+            let sub_cache = self.trees.entry(base).or_insert(TreeCache::new());
+            sub_cache.add_tree(entry); 
+        } else {
+            let blob = TreeEntry::new(entry.key, ObjectKind::Blob, entry.name);
+            self.add_blob(blob);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -155,7 +186,7 @@ mod tests {
         let content = fs::read(&filename).unwrap();
         let mut decoded = &decompress(content).unwrap()[..];
 
-        let index = Tree::read(&mut decoded);
+        let index = Tree::_read(&mut decoded);
         let index_entry = index.entries[4].to_string();
 
         let expected = "040000 tree f37ef49b903a6db9fa814b04f8226569f6d0f592    examples";
@@ -168,7 +199,7 @@ mod tests {
         let content = fs::read(&filename).unwrap();
         let mut decoded = &decompress(content).unwrap()[..];
 
-        let tree = Tree::read(&mut decoded).to_bytes();
+        let tree = Tree::_read(&mut decoded).to_bytes();
         let key = hash_tree(tree).to_string();
 
         let expected = String::from("f37ef49b903a6db9fa814b04f8226569f6d0f592");

@@ -41,6 +41,10 @@ impl Commit {
 
     }
 
+}
+
+#[cfg(test)]
+impl Commit {
     pub fn read(bytes: &mut &[u8]) -> Option<Commit> {
         Commit::read_header(bytes);
         let commit = str::from_utf8(bytes).ok()?;
@@ -116,7 +120,6 @@ impl fmt::Display for Commit {
         writeln!(f, "\n{}", self.message)
     }
 }
-
 
 
 #[cfg(test)]

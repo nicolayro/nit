@@ -5,7 +5,6 @@ use std::io::{Write};
 use std::path::{Path, PathBuf, Component};
 use std::fs::File;
 use std::time::SystemTime;
-use std::collections::HashMap;
 
 
 mod compress;
@@ -27,7 +26,7 @@ use util::*;
 use object::*;
 
 const ROOT: &str   = ".git";
-const BRANCH: &str = "refs";
+const BRANCH: &str = "refs-test";
 
 fn remove_leading_dot_slash(path: PathBuf) -> PathBuf {
     let components: Vec<_> = path.components().collect();
@@ -53,7 +52,7 @@ fn add(path: PathBuf) -> Vec<IndexEntry> {
             let sub_directory = add(path);
             entries.extend(sub_directory);
         } else {
-            let hash = add_file(&path);
+            let hash = write_blob(&path);
             match hash {
                 Ok(hash) => {
                     let path  = remove_leading_dot_slash(path);
@@ -68,7 +67,7 @@ fn add(path: PathBuf) -> Vec<IndexEntry> {
     entries
 }
 
-fn add_file(file: &PathBuf) -> Result<Hash, io::Error> {
+fn write_blob(file: &PathBuf) -> Result<Hash, io::Error> {
     //  hash-object
     let content = fs::read(file)?;
     let blob = hash_blob(content.clone());
@@ -78,7 +77,7 @@ fn add_file(file: &PathBuf) -> Result<Hash, io::Error> {
     let path = Path::new(&path_str);
 
     if path.exists() {
-        println!("{:?} already exists, skipping write", path);
+        println!("blob {} already exists, skipping write to {:?}", blob, path);
         return Ok(blob)
     }
 
@@ -112,61 +111,62 @@ fn write_index(entries: Vec<IndexEntry>) -> Result<(), io::Error> {
     Ok(())
 }
 
-fn write_blob(entry: TreeEntry) {
-    let mut bytes = format!(
-        "{:06} {}\0", 
-        ObjectKind::Blob,
-        entry.name.to_string_lossy(),
-    ).into_bytes();
-    bytes.extend(&entry.key.0)
-}  
+fn write_tree(tree: Vec<u8>) -> Result<Hash, io::Error> {
+    let hash = hash_tree(tree.clone());
 
-fn create_tree(entries: Vec<IndexEntry>) -> Result<Hash, io::Error> {
-    let mut cache = Cache {
-        blobs: Vec::new(),
-        trees: HashMap::new()
-    };
+    let path_str = format!("{}/{}", ROOT, hash.to_object_path());
+    let path = Path::new(&path_str);
 
-    // src/main.rs
-    // src/mod.rs
-    // cargo.toml
-
-    for entry in entries {
-        let path = PathBuf::from(&entry.name);
-        let components: Vec<Component> = path.components().collect();
-        if components.len() > 1 {
-            let (base, rest) = components.split_first().expect("ERROR: Split first should always work in len > 1");
-            let base: PathBuf = base.into();
-            let rest: PathBuf = rest.iter().collect();
-
-            let entry = TreeEntry::new(entry.key, ObjectKind::Blob, rest);
-            let mut sub_cache = cache.trees.entry(base).or_insert(Cache::new());
-            sub_cache.update(entry); 
-        } else {
-            let blob = TreeEntry::new(entry.key, ObjectKind::Blob, entry.name.into());
-            cache.blobs.push(blob);
-        }
+    if path.exists() {
+        println!("tree {} already exists, skipping write to {:?}", hash, path);
+        return Ok(hash)
     }
 
-    dbg!(cache);
-    todo!()
-}
-
-fn write_tree(tree: Vec<u8>) -> Result<Hash, io::Error> {
-    // let tree = index.to_tree_bytes();
-
-    let key = hash_tree(tree.clone());
-
-    let path_str = format!("{}/{}", ROOT, key.to_object_path());
-    let path = Path::new(&path_str);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
     let header = format!("{} {}\0", ObjectKind::Tree, tree.len());
     let compressed = compress_content(header, tree)?;
+
     fs::write(path, compressed)?;
 
-    Ok(key)
+    println!("Written {}", hash);
+    Ok(hash)
+}
+
+fn write_cache(cache: TreeCache) -> Result<Hash, io::Error> {
+    let mut trees_as_bytes: Vec<(String, Vec<u8>)> = Vec::new();
+
+    for blob in cache.blobs {
+        let name = format!("{}", blob.name.to_string_lossy());
+        trees_as_bytes.push((name, blob.as_bytes()));
+    }
+
+    for (dir, cache) in cache.trees {
+        let hash = match write_cache(cache) {
+            Ok(hash) => hash,
+            Err(err) => panic!("ERROR: Unable to create tree for '{}': {}", dir.to_string_lossy(), err)
+        };
+
+        let mut bytes = format!(
+            "{:06} {}\0", 
+            ObjectKind::Tree as i32,
+            dir.to_string_lossy(),
+        ).into_bytes();
+        bytes.extend_from_slice(&hash.0);
+
+        let name = format!("{}/", dir.to_string_lossy());
+        trees_as_bytes.push((name, bytes));
+    }
+
+    trees_as_bytes.sort_by_key(|(n,_)| n.clone());
+
+    let tree: Vec<u8> = trees_as_bytes
+        .into_iter()
+        .map(|(_, t)| t)
+        .flatten()
+        .collect();
+    write_tree(tree)
 }
 
 fn commit(tree: Vec<u8>) -> Result<Commit, io::Error> {
@@ -230,29 +230,26 @@ fn update_refs(commit: Hash) -> Result<(), io::Error> {
 }
 
 fn main() {
-
     // Create objects and write index
     let entries = add(PathBuf::from("."));
 
     // Write index
     write_index(entries).unwrap();
         
-
     let index_file = format!("{}/index", ROOT);
     let index = Index::read(&index_file);
 
     //  write-tree
-    let tree = create_tree(index.entries).unwrap();
+    let cache = TreeCache::from_index(index);
+    let tree = write_cache(cache).unwrap();
 
     // Git commit
     let tree = read_tree(tree).unwrap();
     let commit = commit(tree).unwrap();
-    println!("{}", commit);
 
     // Store commit
     let commit_hash = store_commit(commit).unwrap();
 
     // Update refs
     update_refs(commit_hash).unwrap();
-
 }
