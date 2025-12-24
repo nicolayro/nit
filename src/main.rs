@@ -2,12 +2,14 @@ use std::fs;
 use std::io;
 
 use std::io::{Write};
-use std::path::Path;
+use std::path::{Path, PathBuf, Component};
 use std::fs::File;
 use std::time::SystemTime;
 
+
 mod compress;
 mod commit;
+mod directory;
 mod object;
 mod hash;
 mod index;
@@ -16,16 +18,56 @@ mod util;
 
 use compress::*;
 use commit::*;
+use directory::*;
 use hash::*;
-// use tree::*;
+use tree::*;
 use index::*;
 use util::*;
 use object::*;
 
 const ROOT: &str   = ".git";
-const BRANCH: &str = "refs";
+const BRANCH: &str = "multiple-files";
 
-fn add(file: &str) -> Result<Hash, io::Error> {
+fn remove_leading_dot_slash(path: PathBuf) -> PathBuf {
+    let components: Vec<_> = path.components().collect();
+
+    if let Some(Component::CurDir) = components.first() {
+        components.iter().skip(1).collect()
+    } else {
+        path.to_path_buf()
+    }
+}
+
+
+fn add(path: PathBuf) -> Vec<IndexEntry> {
+    let dir = std::fs::read_dir(path).expect("Unable to read directory");
+    let mut entries = Vec::new();
+    for path in dir {
+        let path = path.unwrap().path();
+        if IGNORE.iter().any(|i| path.ends_with(i)) {
+            continue
+        }
+
+        if path.is_dir() {
+            let sub_directory = add(path);
+            entries.extend(sub_directory);
+        } else {
+            let hash = write_blob(&path);
+            match hash {
+                Ok(hash) => {
+                    let path  = remove_leading_dot_slash(path);
+                    let filename = path.to_str().unwrap();
+                    let entry = IndexEntry::create(hash, filename);
+                    entries.push(entry);
+                },
+                Err(err) => println!("Error adding {:?}: {}", path, err)
+            }
+        }
+    }
+    entries
+}
+
+fn write_blob(file: &PathBuf) -> Result<Hash, io::Error> {
     //  hash-object
     let content = fs::read(file)?;
     let blob = hash_blob(content.clone());
@@ -33,6 +75,12 @@ fn add(file: &str) -> Result<Hash, io::Error> {
     //  -w (store the object)
     let path_str = format!("{}/{}", ROOT, blob.to_object_path());
     let path = Path::new(&path_str);
+
+    if path.exists() {
+        println!("blob {} already exists, skipping write to {:?}", blob, path);
+        return Ok(blob)
+    }
+
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -63,24 +111,62 @@ fn write_index(entries: Vec<IndexEntry>) -> Result<(), io::Error> {
     Ok(())
 }
 
-fn write_tree() -> Result<Hash, io::Error> {
-    let filename = format!("{}/index", ROOT);
+fn write_tree(tree: Vec<u8>) -> Result<Hash, io::Error> {
+    let hash = hash_tree(tree.clone());
 
-    let index = Index::read(&filename);
-    let tree = index.to_tree_bytes();
-
-    let key = hash_tree(tree.clone());
-
-    let path_str = format!("{}/{}", ROOT, key.to_object_path());
+    let path_str = format!("{}/{}", ROOT, hash.to_object_path());
     let path = Path::new(&path_str);
+
+    if path.exists() {
+        println!("tree {} already exists, skipping write to {:?}", hash, path);
+        return Ok(hash)
+    }
+
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
     let header = format!("{} {}\0", ObjectKind::Tree, tree.len());
     let compressed = compress_content(header, tree)?;
+
     fs::write(path, compressed)?;
 
-    Ok(key)
+    println!("Written {}", hash);
+    Ok(hash)
+}
+
+fn write_cache(cache: TreeCache) -> Result<Hash, io::Error> {
+    let mut trees_as_bytes: Vec<(String, Vec<u8>)> = Vec::new();
+
+    for blob in cache.blobs {
+        let name = format!("{}", blob.name.to_string_lossy());
+        trees_as_bytes.push((name, blob.as_bytes()));
+    }
+
+    for (dir, cache) in cache.trees {
+        let hash = match write_cache(cache) {
+            Ok(hash) => hash,
+            Err(err) => panic!("ERROR: Unable to create tree for '{}': {}", dir.to_string_lossy(), err)
+        };
+
+        let mut bytes = format!(
+            "{:06} {}\0", 
+            ObjectKind::Tree as i32,
+            dir.to_string_lossy(),
+        ).into_bytes();
+        bytes.extend_from_slice(&hash.0);
+
+        let name = format!("{}/", dir.to_string_lossy());
+        trees_as_bytes.push((name, bytes));
+    }
+
+    trees_as_bytes.sort_by_key(|(n,_)| n.clone());
+
+    let tree: Vec<u8> = trees_as_bytes
+        .into_iter()
+        .map(|(_, t)| t)
+        .flatten()
+        .collect();
+    write_tree(tree)
 }
 
 fn commit(tree: Vec<u8>) -> Result<Commit, io::Error> {
@@ -144,29 +230,22 @@ fn update_refs(commit: Hash) -> Result<(), io::Error> {
 }
 
 fn main() {
-    let dir = ["main.c", "main.h"];
-
     // Create objects and write index
-    let mut entries: Vec<IndexEntry> = Vec::new();
-    for file in dir {
-        let hash = add(file);
-        match hash {
-            Ok(hash) => {
-                let entry = IndexEntry::create(hash, file);
-                entries.push(entry);
-            },
-            Err(err) => println!("Error adding {}: {}", file, err)
-        }
-    }
+    let entries = add(PathBuf::from("."));
+
+    // Write index
     write_index(entries).unwrap();
+        
+    let index_file = format!("{}/index", ROOT);
+    let index = Index::read(&index_file);
 
     //  write-tree
-    let tree_hash = write_tree().unwrap();
+    let cache = TreeCache::from_index(index);
+    let tree = write_cache(cache).unwrap();
 
     // Git commit
-    let tree = read_tree(tree_hash).unwrap();
+    let tree = read_tree(tree).unwrap();
     let commit = commit(tree).unwrap();
-    println!("{}", commit);
 
     // Store commit
     let commit_hash = store_commit(commit).unwrap();
