@@ -1,6 +1,13 @@
 use crate::hash::*;
+use crate::ROOT;
+use crate::compress::*;
+use crate::util::*;
+
+use std::fs;
+use std::io;
 
 use std::str::FromStr;
+use std::path::Path;
 
 #[derive(Debug, Copy, Clone)]
 pub enum ObjectKind {
@@ -32,26 +39,43 @@ impl std::fmt::Display for ObjectKind {
 }
 
 pub fn hash_object(object_type: ObjectKind, content: Vec<u8>) -> Hash {
-    match object_type {
-        ObjectKind::Blob => hash_blob(content),
-        ObjectKind::Tree => hash_tree(content),
-        ObjectKind::Commit => hash_commit(content)
-    }
+    let header = format!("{} {}\0", object_type, content.len());
+    Hash::from_bytes(header, content)
 }
 
 pub fn hash_blob(content: Vec<u8>) -> Hash {
-    let header = format!("{} {}\0", ObjectKind::Blob, content.len());
-    Hash::from_bytes(header, content)
+    hash_object(ObjectKind::Blob, content)
 }
 
 pub fn hash_tree(content: Vec<u8>) -> Hash {
-    let header = format!("{} {}\0", ObjectKind::Tree, content.len());
-    Hash::from_bytes(header, content)
+    hash_object(ObjectKind::Tree, content)
 }
 
 pub fn hash_commit(content: Vec<u8>) -> Hash {
-    let header = format!("{} {}\0", ObjectKind::Commit, content.len());
-    Hash::from_bytes(header, content)
+    hash_object(ObjectKind::Commit, content)
+}
+
+pub fn write_object(object_type: ObjectKind, content: Vec<u8>) -> Result<Hash, io::Error> {
+    let hash = hash_object(object_type, content.clone());
+
+    let path_str = format!("{}/{}", ROOT, hash.to_object_path());
+    let path = Path::new(&path_str);
+    if path.exists() {
+        println!("[INFO] {} {} already exists", object_type, hash);
+        return Ok(hash)
+    }
+
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let header = format!("{} {}\0", object_type, content.len());
+    let compressed = compress_content(header, content)?;
+    fs::write(path, compressed)?;
+
+    println!("[INFO] {} {} created", object_type, hash);
+
+    Ok(hash)
 }
 
 

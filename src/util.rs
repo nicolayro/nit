@@ -1,7 +1,10 @@
 use crate::hash::*;
-use chrono::DateTime;
 
-// TODO: Finn på bedre navn her
+use std::fs;
+use std::io;
+
+use std::path::Path;
+
 pub fn take_u16(input: &mut &[u8]) -> u16 {
     let (int_bytes, rest) = input.split_at(size_of::<u16>());
     *input = rest;
@@ -26,11 +29,10 @@ pub fn take_n_bytes(input: &mut &[u8], n: usize) -> Vec<u8> {
     bytes.to_vec()
 }
 
-pub fn timestamp_to_date(seconds: u32, nanoseconds: u32) -> String {
-    let seconds: i64 = i64::from(seconds);
-    let dt = DateTime::from_timestamp(seconds, nanoseconds);
-    match dt {
-        Some(date) => format!("{}", date),
-        None => String::from("")
+pub fn write_to_file(path_str: String, content: Vec<u8>) -> Result<(), io::Error> {
+    let path = Path::new(&path_str);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
     }
+    fs::write(path, content)
 }

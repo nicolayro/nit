@@ -1,7 +1,7 @@
-use std::fmt;
-
 use crate::hash::*;
-use crate::take_n_bytes;
+use crate::util::take_n_bytes;
+
+use std::fmt;
 
 pub struct Stamp {
     pub name: String,
@@ -31,16 +31,14 @@ impl Commit {
         committer: Stamp, 
         message: String
     ) -> Self {
-        Commit {
+        Self {
             tree,
             parent,
             author,
             committer,
             message
         }
-
     }
-
 }
 
 #[cfg(test)]
@@ -121,6 +119,18 @@ impl fmt::Display for Commit {
     }
 }
 
+#[cfg(test)]
+use chrono::DateTime;
+
+#[cfg(test)]
+pub fn timestamp_to_date(seconds: u32, nanoseconds: u32) -> String {
+    let seconds: i64 = i64::from(seconds);
+    let dt = DateTime::from_timestamp(seconds, nanoseconds);
+    match dt {
+        Some(date) => format!("{}", date),
+        None => String::from("")
+    }
+}
 
 #[cfg(test)]
 mod test {

@@ -6,14 +6,14 @@ pub struct Hash(pub [u8; 20]);
 impl Hash {
     pub fn from_hex(hash: &str) -> Self {
         if hash.len() != 40 {
-            panic!("ERROR: Hex encoded hash must be 40 characters, received '{}': {}",
+            panic!("[ERROR]: Hex encoded hash must be 40 characters, received '{}': {}",
                 hash.len(),
                 hash
             )
         }
         let bytes = match hex::decode(hash) {
             Ok(b) => b,
-            Err(err) => panic!("ERROR: Invalid hash '{}': {}", hash, err)
+            Err(err) => panic!("[ERROR]: Invalid hash '{}': {}", hash, err)
         };
 
         Hash(bytes.try_into().unwrap())
