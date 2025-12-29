@@ -1,21 +1,64 @@
 use crate::hash::*;
 use crate::object::*;
 use crate::take_hash;
+
 use std::fmt;
 
 use std::str::FromStr;
+use std::path::PathBuf;
 
 pub struct Tree {
     pub entries: Vec<TreeEntry>
 }
 
+
+#[derive(Debug)]
+struct Cache {
+    blobs: Vec<TreeEntry>,
+    trees: HashMap<PathBuf, Cache>
+}
+
+impl Cache {
+    pub fn new() -> Self {
+        Self {
+            blobs: Vec::new(),
+            trees: HashMap::new()
+        }
+    }
+}
+
+impl Cache {
+    fn update(&mut self, entry: TreeEntry) {
+        let path = PathBuf::from(&entry.name);
+        let components: Vec<Component> = path.components().collect();
+        if components.len() > 1 {
+            let (base, rest) = components.split_first().expect("ERROR: Split first should always work in len > 1");
+            let base: PathBuf = base.into();
+            let rest: PathBuf = rest.iter().collect();
+
+            let entry = TreeEntry::new(entry.key, entry.mode, rest);
+            let sub_cache = self.trees.entry(base).or_insert(Cache::new());
+            sub_cache.update(entry); 
+        } else {
+            let blob = TreeEntry::new(entry.key, ObjectKind::Blob, entry.name);
+            self.blobs.push(blob);
+        }
+    }
+}
+
+#[derive(Debug)]
 pub struct TreeEntry {
     pub key: Hash,
     pub mode: ObjectKind,
-    pub name: String,
+    pub name: PathBuf,
 }
 
 impl Tree {
+    pub fn create() -> Self {
+        let entries = Vec::new();
+        Self { entries }
+    }
+
     pub fn read(bytes: &mut &[u8]) -> Self{
         Tree::read_header(bytes);
 
@@ -36,7 +79,7 @@ impl Tree {
         }
     }
 
-    pub fn write_tree(&self) -> Vec<u8> {
+    pub fn to_bytes(&self) -> Vec<u8> {
         self.entries
             .iter()
             .map(|entry| entry.as_bytes())
@@ -46,8 +89,11 @@ impl Tree {
 }
 
 impl TreeEntry {
+    pub fn new(key: Hash, mode: ObjectKind, name: PathBuf) -> Self {
+        TreeEntry { key, mode, name }
+    }
+
     pub fn read(bytes: &mut &[u8]) -> Option<Self> {
-        println!("reading entries");
         if let Some(pos) = bytes.iter().position(|&x| x == 0) {
             let (content, rest) = bytes.split_at(pos);
             let data: Vec<&str> = str::from_utf8(content).ok()?
@@ -55,11 +101,6 @@ impl TreeEntry {
                 .collect();
             for (i, s) in data.clone().into_iter().enumerate() {
                 println!("{} {}", i, s);
-            }
-
-            if data.len() != 2 {
-                println!("finished reading entries");
-                return None;
             }
 
             let mode: ObjectKind = ObjectKind::from_str(data[0]).unwrap();
@@ -85,7 +126,7 @@ impl TreeEntry {
         let mut bytes = format!(
             "{:06} {}\0", 
             self.mode as i32,
-            self.name,
+            self.name.to_string_lossy(),
         ).into_bytes();
         bytes.extend_from_slice(&self.key.0);
         bytes
@@ -98,7 +139,7 @@ impl fmt::Display for TreeEntry {
             self.mode as i32,
             self.mode,
             self.key,
-            self.name)
+            self.name.to_string_lossy())
     }
 }
 
@@ -127,7 +168,7 @@ mod tests {
         let content = fs::read(&filename).unwrap();
         let mut decoded = &decompress(content).unwrap()[..];
 
-        let tree = Tree::read(&mut decoded).write_tree();
+        let tree = Tree::read(&mut decoded).to_bytes();
         let key = hash_tree(tree).to_string();
 
         let expected = String::from("f37ef49b903a6db9fa814b04f8226569f6d0f592");
