@@ -28,8 +28,34 @@ pub struct IndexHeader {
 }
 
 impl Index {
-    pub fn read(filename: &str) -> Self {
-        let contents = fs::read(filename).unwrap();
+    pub fn new(entries: Vec<IndexEntry>) -> Self {
+        let header = IndexHeader {
+            signature: u32::from_be_bytes([ b'D', b'I', b'R', b'C' ]),
+            version: 2 as u32,
+            num_entries: entries.len() as u32,
+        };
+
+        Index {
+            header: header,
+            entries: entries
+        }
+    }
+
+    pub fn extend(self, new_entries: Vec<IndexEntry>) -> Self {
+        let mut updated_entries = self.entries
+            .into_iter()
+            .filter(|e1| !new_entries.iter().any(|e2| e1.name == e2.name))
+            .collect::<Vec<IndexEntry>>();
+
+        for entry in new_entries {
+            updated_entries.push(entry);
+        }
+
+        Self::new(updated_entries)
+    }
+
+    pub fn read(index_file: &str) -> Self {
+        let contents = fs::read(index_file).unwrap();
         let (hbytes, ebytes) = contents.split_at(12);
 
         let header = Self::read_header(hbytes);
@@ -157,17 +183,15 @@ pub struct IndexEntry {
     flags: u16,
 
     /* Variable length name entry (relative unix path)*/
-    name: String,
+    pub name: String,
 }
 
 impl IndexEntry {
-    pub fn create(key: Hash, filename: &str) -> Self{
-        let stat = fs::metadata(filename).unwrap();
+    pub fn create(key: Hash, filename: &str) -> Self{ let stat =
+        fs::metadata(filename).unwrap();
 
-        let ctime_sec  = stat.ctime() as u32;
-        let ctime_nano = stat.ctime_nsec() as u32;
-        let mtime_sec  = stat.mtime() as u32;
-        let mtime_nano = stat.mtime_nsec() as u32;
+        let ctime_sec  = stat.ctime() as u32; let ctime_nano = stat.ctime_nsec() as u32; let
+            mtime_sec  = stat.mtime() as u32; let mtime_nano = stat.mtime_nsec() as u32;
         let dev        = stat.dev() as u32;
         let ino        = stat.ino() as u32;
         let mode       = (1000 & 0x00F) << 12 | 0o0644 & 0x1FF;
@@ -175,7 +199,7 @@ impl IndexEntry {
         let gid        = stat.gid() as u32;
         let size       = stat.len() as u32;
         let flags      = filename.len() as u16;
-        let name = filename;
+        let name       = filename;
 
         IndexEntry {
             ctime_sec,
@@ -207,10 +231,10 @@ impl IndexEntry {
         let size       = take_u32(bytes);
         let key        = take_hash(bytes);
         let flags      = take_u16(bytes);
-        let name_len = Self::name_len_from_flags(flags);
+        let name_len   = Self::name_len_from_flags(flags);
         let name_bytes = take_n_bytes(bytes, name_len);
-        let name = String::from_utf8(name_bytes)
-            .expect("ERROR: Unable to read file name");
+        let name       = String::from_utf8(name_bytes)
+                            .expect("ERROR: Unable to read file name");
 
         IndexEntry {
             ctime_sec,
