@@ -1,9 +1,10 @@
 use crate::util::*;
 use crate::hash::*;
 
-use std::os::unix::fs::MetadataExt;
 use std::fs;
+use std::iter;
 
+use std::os::unix::fs::MetadataExt;
 
 #[derive(Debug)]
 pub struct Index {
@@ -31,14 +32,11 @@ impl Index {
     pub fn new(entries: Vec<IndexEntry>) -> Self {
         let header = IndexHeader {
             signature: u32::from_be_bytes([ b'D', b'I', b'R', b'C' ]),
-            version: 2 as u32,
+            version: 2_u32,
             num_entries: entries.len() as u32,
         };
 
-        Index {
-            header: header,
-            entries: entries
-        }
+        Index { header, entries }
     }
 
     pub fn extend(self, new_entries: Vec<IndexEntry>) -> Self {
@@ -92,48 +90,29 @@ impl Index {
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut index_bytes: Vec<u8> = Vec::new();
 
-        index_bytes.extend_from_slice(&self.header.signature.to_be_bytes());
-        index_bytes.extend_from_slice(&self.header.version.to_be_bytes());
-        index_bytes.extend_from_slice(&self.header.num_entries.to_be_bytes());
+        index_bytes.extend(self.header.signature.to_be_bytes());
+        index_bytes.extend(self.header.version.to_be_bytes());
+        index_bytes.extend(self.header.num_entries.to_be_bytes());
 
         for entry in &self.entries {
-            index_bytes.extend_from_slice(&entry.ctime_sec.to_be_bytes());
-            index_bytes.extend_from_slice(&entry.ctime_nano.to_be_bytes());
-            index_bytes.extend_from_slice(&entry.mtime_sec.to_be_bytes());
-            index_bytes.extend_from_slice(&entry.mtime_nano.to_be_bytes());
-            index_bytes.extend_from_slice(&entry.dev.to_be_bytes());
-            index_bytes.extend_from_slice(&entry.ino.to_be_bytes());
-            index_bytes.extend_from_slice(&entry.mode.to_be_bytes());
-            index_bytes.extend_from_slice(&entry.uid.to_be_bytes());
-            index_bytes.extend_from_slice(&entry.gid.to_be_bytes());
-            index_bytes.extend_from_slice(&entry.size.to_be_bytes());
-            index_bytes.extend_from_slice(&entry.key.0);
-            index_bytes.extend_from_slice(&entry.flags.to_be_bytes());
-            index_bytes.extend_from_slice(&entry.name.as_bytes());
+            index_bytes.extend(entry.ctime_sec.to_be_bytes());
+            index_bytes.extend(entry.ctime_nano.to_be_bytes());
+            index_bytes.extend(entry.mtime_sec.to_be_bytes());
+            index_bytes.extend(entry.mtime_nano.to_be_bytes());
+            index_bytes.extend(entry.dev.to_be_bytes());
+            index_bytes.extend(entry.ino.to_be_bytes());
+            index_bytes.extend(entry.mode.to_be_bytes());
+            index_bytes.extend(entry.uid.to_be_bytes());
+            index_bytes.extend(entry.gid.to_be_bytes());
+            index_bytes.extend(entry.size.to_be_bytes());
+            index_bytes.extend(entry.key.0);
+            index_bytes.extend(entry.flags.to_be_bytes());
+            index_bytes.extend(entry.name.as_bytes());
             let padding_len = 8 - ((6 + entry.name_len()) % 8);
-            for _ in 0..padding_len {
-                index_bytes.push(0);
-            }
-
+            index_bytes.extend(iter::repeat_n(0, padding_len));
         }
 
         index_bytes
-    }
-
-
-    pub fn to_tree_bytes(&self) -> Vec<u8> {
-        let mut tree: Vec<u8> = Vec::new();
-
-        for entry in &self.entries {
-            let mut bytes = format!(
-                "{:06} {}\0", 
-                100644,
-                entry.name,
-            ).into_bytes();
-            bytes.extend_from_slice(&entry.key.0);
-            tree.append(&mut bytes);
-        }
-        tree
     }
 }
 

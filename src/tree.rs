@@ -9,9 +9,6 @@ use std::str::FromStr;
 use std::path::{PathBuf, Component};
 use std::collections::HashMap;
 
-pub struct Tree {
-    pub entries: Vec<TreeEntry>
-}
 
 #[derive(Debug)]
 pub struct TreeCache {
@@ -25,42 +22,6 @@ pub struct TreeEntry {
     pub mode: ObjectKind,
     pub name: PathBuf,
 }
-
-impl Tree {
-    pub fn _new() -> Self {
-        let entries = Vec::new();
-        Self { entries }
-    }
-
-    pub fn _read(bytes: &mut &[u8]) -> Self{
-        Tree::_read_header(bytes);
-
-        let mut entries = Vec::new();
-        while let Some(entry) = TreeEntry::_read(bytes) {
-            entries.push(entry);
-        };
-
-        Tree { entries }
-    }
-
-    pub fn _read_header(bytes: &mut &[u8]) {
-        if let Some(pos) = bytes.iter().position(|&x| x == 0) {
-            let (content, rest) = bytes.split_at(pos);
-            let data: &str = str::from_utf8(content).unwrap();
-            *bytes = &rest[1..];
-            println!("{} |", data);
-        }
-    }
-
-    pub fn _to_bytes(&self) -> Vec<u8> {
-        self.entries
-            .iter()
-            .map(|entry| entry.as_bytes())
-            .flatten()
-            .collect()
-    }
-}
-
 impl TreeEntry {
     pub fn new(key: Hash, mode: ObjectKind, name: PathBuf) -> Self {
         TreeEntry { key, mode, name }
@@ -176,6 +137,45 @@ impl TreeCache {
 
 #[cfg(test)]
 mod tests {
+    struct Tree {
+        pub entries: Vec<TreeEntry>
+    }
+
+    impl Tree {
+        pub fn _new() -> Self {
+            let entries = Vec::new();
+            Self { entries }
+        }
+
+        pub fn _read(bytes: &mut &[u8]) -> Self{
+            Tree::_read_header(bytes);
+
+            let mut entries = Vec::new();
+            while let Some(entry) = TreeEntry::_read(bytes) {
+                entries.push(entry);
+            };
+
+            Tree { entries }
+        }
+
+        pub fn _read_header(bytes: &mut &[u8]) {
+            if let Some(pos) = bytes.iter().position(|&x| x == 0) {
+                let (content, rest) = bytes.split_at(pos);
+                let data: &str = str::from_utf8(content).unwrap();
+                *bytes = &rest[1..];
+                println!("{} |", data);
+            }
+        }
+
+        pub fn _to_bytes(&self) -> Vec<u8> {
+            self.entries
+                .iter()
+                .map(|entry| entry.as_bytes())
+                .flatten()
+                .collect()
+        }
+    }
+
     use super::*;
     use std::fs;
     use crate::compress::*;
@@ -184,7 +184,7 @@ mod tests {
     fn parse_entry_hash_from_staging_area() {
         let filename = String::from("examples/tree");
         let content = fs::read(&filename).unwrap();
-        let mut decoded = &decompress(content).unwrap()[..];
+        let mut decoded = &_decompress(content).unwrap()[..];
 
         let index = Tree::_read(&mut decoded);
         let index_entry = index.entries[4].to_string();
@@ -197,10 +197,10 @@ mod tests {
     fn create_tree_hash_from_index() {
         let filename = String::from("examples/index_with_tree");
         let content = fs::read(&filename).unwrap();
-        let mut decoded = &decompress(content).unwrap()[..];
+        let mut decoded = &_decompress(content).unwrap()[..];
 
         let tree = Tree::_read(&mut decoded)._to_bytes();
-        let key = hash_tree(tree).to_string();
+        let key = hash_object(ObjectKind::Tree, tree).to_string();
 
         let expected = String::from("f37ef49b903a6db9fa814b04f8226569f6d0f592");
         assert_eq!(key, expected);

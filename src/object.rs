@@ -11,7 +11,7 @@ use std::path::Path;
 #[derive(Debug, Copy, Clone)]
 pub enum ObjectKind {
     Blob = 100644,
-    Tree = 040000,
+    Tree = 40000,
     Commit = 0
 }
 
@@ -40,18 +40,6 @@ impl std::fmt::Display for ObjectKind {
 pub fn hash_object(object_type: ObjectKind, content: Vec<u8>) -> Hash {
     let header = format!("{} {}\0", object_type, content.len());
     Hash::from_bytes(header, content)
-}
-
-pub fn hash_blob(content: Vec<u8>) -> Hash {
-    hash_object(ObjectKind::Blob, content)
-}
-
-pub fn hash_tree(content: Vec<u8>) -> Hash {
-    hash_object(ObjectKind::Tree, content)
-}
-
-pub fn hash_commit(content: Vec<u8>) -> Hash {
-    hash_object(ObjectKind::Commit, content)
 }
 
 pub fn write_object(object_type: ObjectKind, content: Vec<u8>) -> Result<Hash, io::Error> {
@@ -87,7 +75,7 @@ mod test {
     fn hash_blob_object() {
         let content = String::from("what is up, doc?").into_bytes();
 
-        let hashed = hash_blob(content).to_string();
+        let hashed = hash_object(ObjectKind::Blob, content).to_string();
 
         let expected = String::from("bd9dbf5aae1a3862dd1526723246b20206e5fc37");
         assert_eq!(hashed, expected);

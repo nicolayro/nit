@@ -12,13 +12,13 @@ pub fn compress_content(header: String, data: Vec<u8>) -> Result<Vec<u8>, std::i
     encoder.finish()
 }
 
-pub fn compress(bytes: Vec<u8>) -> io::Result<Vec<u8>> {
+pub fn _compress(bytes: Vec<u8>) -> io::Result<Vec<u8>> {
     let mut encoder = ZlibEncoder::new(Vec::new(), Compression::fast());
     encoder.write_all(&bytes)?;
     encoder.finish()
 }
 
-pub fn decompress(bytes: Vec<u8>) -> io::Result<Vec<u8>> {
+pub fn _decompress(bytes: Vec<u8>) -> io::Result<Vec<u8>> {
     let mut z = ZlibDecoder::new(&bytes[..]);
     let mut out = Vec::new();
     z.read_to_end(&mut out)?;

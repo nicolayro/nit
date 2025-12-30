@@ -11,7 +11,6 @@ use std::time::SystemTime;
 mod compress;
 mod commit;
 mod command;
-mod directory;
 mod object;
 mod hash;
 mod index;
@@ -20,7 +19,6 @@ mod util;
 
 use commit::*;
 use command::*;
-use directory::*;
 use hash::*;
 use tree::*;
 use index::*;
@@ -30,6 +28,7 @@ use object::*;
 const ROOT: &str   = ".git";
 const INDEX_FILE: &str = ".git/index";
 const BRANCH: &str = "command";
+const IGNORE: [&str; 3] = [".git", "playground", "target"];
 
 fn get_author() -> Stamp {
     Stamp {
@@ -104,7 +103,7 @@ fn write_commit(commit: Commit) -> Result<Hash, io::Error> {
 
 fn write_index(index: Index) -> Result<(), io::Error> {
     let index_bytes = index.to_bytes();
-    let mut index = File::create(&String::from(INDEX_FILE))?;
+    let mut index = File::create(String::from(INDEX_FILE))?;
     index.write_all(&index_bytes)
 }
 
@@ -136,8 +135,7 @@ fn write_cache(cache: TreeCache) -> Result<Hash, io::Error> {
 
     let tree: Vec<u8> = trees_as_bytes
         .into_iter()
-        .map(|(_, t)| t)
-        .flatten()
+        .flat_map(|(_, t)| t)
         .collect();
 
     write_tree(tree)
@@ -202,13 +200,10 @@ fn main() {
             let cache = TreeCache::from_index(index);
             let tree_hash = write_cache(cache).unwrap();
 
-            // 2. grab commit message
-            let message = message;
-
-            // 3. write to commit
+            // 2. write to commit
             let commit_hash = commit(tree_hash, message).unwrap();
 
-            // 4. update refs
+            // 3. update refs
             update_refs(commit_hash).unwrap();
         }
     };

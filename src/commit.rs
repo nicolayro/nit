@@ -141,7 +141,7 @@ mod test {
     fn read_commit_object() {
         let filename = String::from("examples/commit");
         let content = fs::read(&filename).unwrap();
-        let mut commit_file = &decompress(content).unwrap()[..];
+        let mut commit_file = &_decompress(content).unwrap()[..];
 
         let commit = Commit::read(&mut commit_file).unwrap();
         assert_eq!(commit.author.name, "Nicolay Roness");
@@ -153,7 +153,7 @@ mod test {
     fn create_commit_from_tree() {
         let filename = String::from("examples/commit_tree");
         let content = fs::read(&filename).unwrap();
-        let decoded = &decompress(content).unwrap()[..];
+        let decoded = &_decompress(content).unwrap()[..];
 
         let key = Hash::from_bytes(String::from(""), decoded.to_vec());
         let parent = Some(Hash::from_hex("f60b322c7351b08514fceed6f69102138ab420e7"));
