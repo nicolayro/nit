@@ -1,7 +1,6 @@
-use std::fmt;
-
 use crate::hash::*;
-use crate::take_n_bytes;
+
+use std::fmt;
 
 pub struct Stamp {
     pub name: String,
@@ -31,16 +30,18 @@ impl Commit {
         committer: Stamp, 
         message: String
     ) -> Self {
-        Commit {
+        Self {
             tree,
             parent,
             author,
             committer,
             message
         }
-
     }
+}
 
+#[cfg(test)]
+impl Commit {
     pub fn read(bytes: &mut &[u8]) -> Option<Commit> {
         Commit::read_header(bytes);
         let commit = str::from_utf8(bytes).ok()?;
@@ -70,7 +71,7 @@ impl Commit {
 
     fn read_header(bytes: &mut &[u8]) {
         if let Some(pos) = bytes.iter().position(|&x| x == 0) {
-            take_n_bytes(bytes, pos + 1);
+            crate::take_n_bytes(bytes, pos + 1);
         }
     }
 
@@ -117,7 +118,18 @@ impl fmt::Display for Commit {
     }
 }
 
+#[cfg(test)]
+use chrono::DateTime;
 
+#[cfg(test)]
+pub fn timestamp_to_date(seconds: u32, nanoseconds: u32) -> String {
+    let seconds: i64 = i64::from(seconds);
+    let dt = DateTime::from_timestamp(seconds, nanoseconds);
+    match dt {
+        Some(date) => format!("{}", date),
+        None => String::from("")
+    }
+}
 
 #[cfg(test)]
 mod test {

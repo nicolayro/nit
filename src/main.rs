@@ -1,176 +1,216 @@
+use std::env;
 use std::fs;
 use std::io;
 
 use std::io::{Write};
-use std::path::Path;
 use std::fs::File;
+use std::path::{PathBuf, Component};
+use std::process::exit;
 use std::time::SystemTime;
 
 mod compress;
 mod commit;
+mod command;
+mod directory;
 mod object;
 mod hash;
 mod index;
 mod tree;
 mod util;
 
-use compress::*;
 use commit::*;
+use command::*;
+use directory::*;
 use hash::*;
-// use tree::*;
+use tree::*;
 use index::*;
 use util::*;
 use object::*;
 
 const ROOT: &str   = ".git";
-const BRANCH: &str = "refs";
+const INDEX_FILE: &str = ".git/index";
+const BRANCH: &str = "command";
 
-fn add(file: &str) -> Result<Hash, io::Error> {
-    //  hash-object
-    let content = fs::read(file)?;
-    let blob = hash_blob(content.clone());
-
-    //  -w (store the object)
-    let path_str = format!("{}/{}", ROOT, blob.to_object_path());
-    let path = Path::new(&path_str);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-
-    let header = format!("{} {}\0", ObjectKind::Blob, content.len());
-    let compressed = compress_content(header, content)?;
-    fs::write(path, compressed).unwrap();
-
-    Ok(blob)
-}
-
-fn write_index(entries: Vec<IndexEntry>) -> Result<(), io::Error> {
-    let index_header = IndexHeader {
-        signature: u32::from_be_bytes([ b'D', b'I', b'R', b'C' ]),
-        version: 2 as u32,
-        num_entries: entries.len() as u32,
-    };
-
-    let index = Index {
-        header: index_header,
-        entries: entries
-    };
-
-    let index_bytes = index.to_bytes();
-    let index_path = format!("{}/index", ROOT);
-    let mut index = File::create(&String::from(index_path))?;
-    index.write_all(&index_bytes)?;
-    Ok(())
-}
-
-fn write_tree() -> Result<Hash, io::Error> {
-    let filename = format!("{}/index", ROOT);
-
-    let index = Index::read(&filename);
-    let tree = index.to_tree_bytes();
-
-    let key = hash_tree(tree.clone());
-
-    let path_str = format!("{}/{}", ROOT, key.to_object_path());
-    let path = Path::new(&path_str);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let header = format!("{} {}\0", ObjectKind::Tree, tree.len());
-    let compressed = compress_content(header, tree)?;
-    fs::write(path, compressed)?;
-
-    Ok(key)
-}
-
-fn commit(tree: Vec<u8>) -> Result<Commit, io::Error> {
-    let key = Hash::from_bytes(String::from(""), tree);
-    let path = format!("{}/refs/heads/{}", ROOT, BRANCH);
-    let parent_hex = fs::read_to_string(path)?;
-    let parent = Hash::from_hex(&parent_hex[..40]);
-    let author = Stamp {
+fn get_author() -> Stamp {
+    Stamp {
         name: "Nicolay Roness".to_string(),
         email: "nicolay.caspersen.roness@sparebank1.no".to_string(),
         timestamp: SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap()
             .as_secs() as u32 - 5 * 86400
-    };
+    }
+}
 
-    let committer = Stamp {
-        name: "Nicolay Roness".to_string(),
-        email: "nicolay.caspersen.roness@sparebank1.no".to_string(),
-        timestamp: 1762103153 
-    };
-    let message = String::from("Make a commit");
+fn get_parent() -> Hash {
+    let path = format!("{}/refs/heads/{}", ROOT, BRANCH);
+    let parent_hex = fs::read_to_string(path)
+        .expect("ERROR: Unable to read parent hex. Tip: Are you on the correct branch?");
+    Hash::from_hex(&parent_hex[..40])
+}
+
+fn remove_leading_dot_slash(path: PathBuf) -> PathBuf {
+    let components: Vec<_> = path.components().collect();
+
+    if let Some(Component::CurDir) = components.first() {
+        components.iter().skip(1).collect()
+    } else {
+        path.to_path_buf()
+    }
+}
+
+fn add(path: PathBuf) -> Vec<IndexEntry> {
+    let mut entries = Vec::new();
+    if path.is_dir() {
+        let dir = std::fs::read_dir(path).expect("Unable to read directory");
+        for path in dir {
+            let path = path.unwrap().path();
+            if IGNORE.iter().any(|i| path.ends_with(i)) {
+                println!("[INFO] ignoring {}", path.to_string_lossy());
+                continue
+            }
+
+            let sub_directory = add(path);
+            entries.extend(sub_directory);
+        }
+    } else {
+        let hash = write_blob(&path);
+        match hash {
+            Ok(hash) => {
+                let path  = remove_leading_dot_slash(path);
+                let filename = path.to_string_lossy();
+                let entry = IndexEntry::create(hash, &filename);
+                entries.push(entry);
+            },
+            Err(err) => println!("[ERROR]: Unable to write blob {:?}: {}", path, err)
+        }
+    }
+    entries
+}
+
+fn write_blob(file: &PathBuf) -> Result<Hash, io::Error> {
+    let content = fs::read(file)?;
+    write_object(ObjectKind::Blob, content)
+}
+
+fn write_tree(tree: Vec<u8>) -> Result<Hash, io::Error> {
+    write_object(ObjectKind::Tree, tree)
+}
+
+fn write_commit(commit: Commit) -> Result<Hash, io::Error> {
+    let commit_content = format!("{}", commit).into_bytes();
+    write_object(ObjectKind::Commit, commit_content)
+}
+
+fn write_index(index: Index) -> Result<(), io::Error> {
+    let index_bytes = index.to_bytes();
+    let mut index = File::create(&String::from(INDEX_FILE))?;
+    index.write_all(&index_bytes)
+}
+
+fn write_cache(cache: TreeCache) -> Result<Hash, io::Error> {
+    let mut trees_as_bytes: Vec<(String, Vec<u8>)> = Vec::new();
+
+    for blob in cache.blobs {
+        let name = format!("{}", blob.name.to_string_lossy());
+        trees_as_bytes.push((name, blob.as_bytes()));
+    }
+
+    for (dir, cache) in cache.trees {
+        let hash = write_cache(cache).unwrap_or_else(|err|
+            panic!("[ERROR]: Unable to create tree for '{}': {}", dir.to_string_lossy(), err)
+        );
+
+        let mut bytes = format!(
+            "{:06} {}\0",
+            ObjectKind::Tree as i32,
+            dir.to_string_lossy(),
+        ).into_bytes();
+        bytes.extend_from_slice(&hash.0);
+
+        let name = format!("{}/", dir.to_string_lossy());
+        trees_as_bytes.push((name, bytes));
+    }
+
+    trees_as_bytes.sort_by_key(|(n,_)| n.clone());
+
+    let tree: Vec<u8> = trees_as_bytes
+        .into_iter()
+        .map(|(_, t)| t)
+        .flatten()
+        .collect();
+
+    write_tree(tree)
+}
+
+fn commit(key: Hash, message: String) -> Result<Hash, io::Error> {
+    // create commit
+    let parent = get_parent();
+    let author = get_author();
+    let committer = get_author();
     let commit = Commit::create(key, Some(parent), author, committer, message);
 
-    Ok(commit)
-}
-
-fn read_tree(tree_hash: Hash) -> Result<Vec<u8>, io::Error> {
-    let path_str = format!("{}/{}", ROOT, tree_hash.to_object_path());
-    let path = Path::new(&path_str);
-    let content = fs::read(&path).unwrap();
-    let decoded = &decompress(content).unwrap()[..];
-
-    Ok(decoded.to_vec())
-}
-
-fn store_commit(commit: Commit) -> Result<Hash, io::Error> {
-    let commit_content = format!("{}", commit).into_bytes();
-    let hash = hash_commit(commit_content.clone());
-    let path_str = format!("{}/{}", ROOT, hash.to_object_path());
-    let path = Path::new(&path_str);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let header = format!("{} {}\0", ObjectKind::Commit, commit_content.len());
-    let compressed = compress_content(header, commit_content)?;
-    println!("Writing commit to {}", hash.to_object_path());
-    fs::write(path, compressed).unwrap();
-
-    Ok(hash)
+    // write commit
+    write_commit(commit)
 }
 
 fn update_refs(commit: Hash) -> Result<(), io::Error> {
-    let path_str = format!("{}/refs/heads/{}", ROOT, BRANCH);
-    let path = Path::new(&path_str);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::write(path, format!("{}", commit))?;
-    Ok(())
+    let path = format!("{}/refs/heads/{}", ROOT, BRANCH);
+    let content = format!("{}", commit).into_bytes();
+    write_to_file(path, content)
+}
+
+fn usage() {
+    println!("USAGE: nit <command> <args>");
+    println!("command:");
+    println!("   add     <file|dir>");
+    println!("   commit  <message>");
 }
 
 fn main() {
-    let dir = ["main.c", "main.h"];
 
-    // Create objects and write index
-    let mut entries: Vec<IndexEntry> = Vec::new();
-    for file in dir {
-        let hash = add(file);
-        match hash {
-            Ok(hash) => {
-                let entry = IndexEntry::create(hash, file);
-                entries.push(entry);
-            },
-            Err(err) => println!("Error adding {}: {}", file, err)
+    let args: Vec<String> = env::args().collect();
+    let command = match Command::parse(args) {
+        Ok(command) => {
+            println!("[INFO]: Executing command: '{:?}'", command);
+            command
+        },
+        Err(err) => {
+            eprintln!("ERROR: {}", err);
+            usage();
+            exit(1);
         }
-    }
-    write_index(entries).unwrap();
+    };
 
-    //  write-tree
-    let tree_hash = write_tree().unwrap();
+    match command {
+        Command::Add(path_buf) => {
+            /* == Git add == */
+            // 1. create objects
+            let new_entries = add(path_buf);
+            let index = Index::read(INDEX_FILE);
+            let updated_index = index.extend(new_entries);
 
-    // Git commit
-    let tree = read_tree(tree_hash).unwrap();
-    let commit = commit(tree).unwrap();
-    println!("{}", commit);
+            // 2. write to index
+            write_index(updated_index).unwrap();
+        },
+        Command::Commit(message) => {
+            /* == Git commit == */
+            // 0. read staging area (index)
+            let index = Index::read(INDEX_FILE);
 
-    // Store commit
-    let commit_hash = store_commit(commit).unwrap();
+            // 1. write-tree
+            let cache = TreeCache::from_index(index);
+            let tree_hash = write_cache(cache).unwrap();
 
-    // Update refs
-    update_refs(commit_hash).unwrap();
+            // 2. grab commit message
+            let message = message;
+
+            // 3. write to commit
+            let commit_hash = commit(tree_hash, message).unwrap();
+
+            // 4. update refs
+            update_refs(commit_hash).unwrap();
+        }
+    };
 }
+
