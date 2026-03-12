@@ -62,7 +62,7 @@ fn remove_leading_dot_slash(path: PathBuf) -> PathBuf {
     }
 }
 
-fn add(path: PathBuf) -> Vec<IndexEntry> {
+fn write_objects(path: PathBuf) -> Vec<IndexEntry> {
     let mut entries = Vec::new();
     if path.is_dir() {
         let dir = std::fs::read_dir(path).expect("Unable to read directory");
@@ -73,7 +73,7 @@ fn add(path: PathBuf) -> Vec<IndexEntry> {
                 continue
             }
 
-            let sub_directory = add(path);
+            let sub_directory = write_objects(path);
             entries.extend(sub_directory);
         }
     } else {
@@ -91,15 +91,28 @@ fn add(path: PathBuf) -> Vec<IndexEntry> {
     entries
 }
 
+fn update_index(entries: Vec<IndexEntry>) -> Index {
+    Index::read(INDEX_FILE).extend(entries)
+}
+
 fn write_blob(file: &PathBuf) -> Result<Hash, io::Error> {
     let content = fs::read(file)?;
     write_object(ObjectKind::Blob, content)
 }
 
+fn write_tree(tree: Vec<u8>) -> Result<Hash, io::Error> {
+    write_object(ObjectKind::Tree, tree)
+}
+
+fn write_commit(commit: Commit) -> Result<Hash, io::Error> {
+    let commit_content = format!("{}", commit).into_bytes();
+    write_object(ObjectKind::Commit, commit_content)
+}
+
 fn write_index(index: Index) -> Result<(), io::Error> {
     let index_bytes = index.to_bytes();
-    let mut index = File::create(String::from(INDEX_FILE))?;
-    index.write_all(&index_bytes)
+    let mut index = File::create(String::from(INDEX_FILE)).unwrap();
+    index.write_all(&index_bytes).unwrap();
 }
 
 fn write_cache(cache: TreeCache) -> Result<Hash, io::Error> {
@@ -107,8 +120,7 @@ fn write_cache(cache: TreeCache) -> Result<Hash, io::Error> {
 
     for blob in cache.blobs {
         let name = format!("{}", blob.name.to_string_lossy());
-        let blob_as_bytes = (name, blob.as_bytes());
-        trees_as_bytes.push(blob_as_bytes);
+        trees_as_bytes.push((name, blob.as_bytes()));
     }
 
     for (dir, cache) in cache.trees {
@@ -137,7 +149,7 @@ fn write_cache(cache: TreeCache) -> Result<Hash, io::Error> {
     write_object(ObjectKind::Tree, tree)
 }
 
-fn commit(key: Hash, message: String) -> Result<Hash, io::Error> {
+fn commit_tree(key: Hash, message: String) -> Result<Hash, io::Error> {
     // create commit
     let parent = get_parent();
     let author = get_author();
@@ -153,6 +165,30 @@ fn update_refs(commit: Hash) -> Result<(), io::Error> {
     let path = format!("{}/refs/heads/{}", ROOT, BRANCH);
     let content = format!("{}", commit).into_bytes();
     write_to_file(path, content)
+}
+
+fn add(path: PathBuf) {
+    // hash-object -w <path>
+    let entries = write_objects(path);
+    // update-index <entry>
+    let index = update_index(entries);
+    write_index(index);
+}
+
+fn commit(message: String) {
+    /* == Git commit == */
+    // 0. read staging area (index)
+    let index = Index::read(INDEX_FILE);
+
+    // 1. write-tree
+    let cache = TreeCache::from_index(index);
+    let tree_hash = write_cache(cache).unwrap();
+
+    // 2. write to commit
+    let commit_hash = commit_tree(tree_hash, message).unwrap();
+
+    // 3. update refs
+    update_refs(commit_hash).unwrap();
 }
 
 fn usage() {
@@ -178,31 +214,8 @@ fn main() {
     };
 
     match command {
-        Command::Add(path_buf) => {
-            /* == Git add == */
-            // 1. create objects
-            let new_entries = add(path_buf);
-            let index = Index::read(INDEX_FILE);
-            let updated_index = index.extend(new_entries);
-
-            // 2. write to index
-            write_index(updated_index).unwrap();
-        },
-        Command::Commit(message) => {
-            /* == Git commit == */
-            // 0. read staging area (index)
-            let index = Index::read(INDEX_FILE);
-
-            // 1. write-tree
-            let cache = TreeCache::from_index(index);
-            let tree_hash = write_cache(cache).unwrap();
-
-            // 2. write to commit
-            let commit_hash = commit(tree_hash, message).unwrap();
-
-            // 3. update refs
-            update_refs(commit_hash).unwrap();
-        }
+        Command::Add(path) => add(path),
+        Command::Commit(message) => commit(message)
     };
 }
 
