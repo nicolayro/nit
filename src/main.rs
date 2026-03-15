@@ -25,9 +25,9 @@ use index::*;
 use util::*;
 use object::*;
 
-const ROOT: &str   = ".git";
+const ROOT: &str = ".git";
 const INDEX_FILE: &str = ".git/index";
-const BRANCH: &str = "nit-test-branch";
+const BRANCH: &str = "smudtech";
 const IGNORE: [&str; 3] = [".git", "playground", "target"];
 
 fn get_author() -> Stamp {
@@ -37,7 +37,7 @@ fn get_author() -> Stamp {
         timestamp: SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap()
-            .as_secs() as u32
+            .as_secs() as u32,
     }
 }
 
@@ -70,7 +70,7 @@ fn write_objects(path: PathBuf) -> Vec<IndexEntry> {
             let path = path.unwrap().path();
             if IGNORE.iter().any(|i| path.ends_with(i)) {
                 println!("[INFO] ignoring {}", path.to_string_lossy());
-                continue
+                continue;
             }
 
             let sub_directory = write_objects(path);
@@ -80,39 +80,27 @@ fn write_objects(path: PathBuf) -> Vec<IndexEntry> {
         let hash = write_blob(&path);
         match hash {
             Ok(hash) => {
-                let path  = remove_leading_dot_slash(path);
+                let path = remove_leading_dot_slash(path);
                 let filename = path.to_string_lossy();
                 let entry = IndexEntry::create(hash, &filename);
                 entries.push(entry);
-            },
+            }
             Err(err) => println!("[ERROR]: Unable to write blob {:?}: {}", path, err)
         }
     }
     entries
 }
 
-fn update_index(entries: Vec<IndexEntry>) -> Index {
-    Index::read(INDEX_FILE).extend(entries)
+fn update_index(entries: Vec<IndexEntry>) {
+    let index = Index::read(INDEX_FILE).extend(entries);
+    let index_bytes = index.to_bytes();
+    let mut index = File::create(String::from(INDEX_FILE)).unwrap();
+    index.write_all(&index_bytes).unwrap()
 }
 
 fn write_blob(file: &PathBuf) -> Result<Hash, io::Error> {
     let content = fs::read(file)?;
     write_object(ObjectKind::Blob, content)
-}
-
-fn write_tree(tree: Vec<u8>) -> Result<Hash, io::Error> {
-    write_object(ObjectKind::Tree, tree)
-}
-
-fn write_commit(commit: Commit) -> Result<Hash, io::Error> {
-    let commit_content = format!("{}", commit).into_bytes();
-    write_object(ObjectKind::Commit, commit_content)
-}
-
-fn write_index(index: Index) -> Result<(), io::Error> {
-    let index_bytes = index.to_bytes();
-    let mut index = File::create(String::from(INDEX_FILE)).unwrap();
-    index.write_all(&index_bytes).unwrap();
 }
 
 fn write_cache(cache: TreeCache) -> Result<Hash, io::Error> {
@@ -139,7 +127,7 @@ fn write_cache(cache: TreeCache) -> Result<Hash, io::Error> {
         trees_as_bytes.push((name, bytes));
     }
 
-    trees_as_bytes.sort_by_key(|(n,_)| n.clone());
+    trees_as_bytes.sort_by_key(|(n, _)| n.clone());
 
     let tree: Vec<u8> = trees_as_bytes
         .into_iter()
@@ -170,9 +158,9 @@ fn update_refs(commit: Hash) -> Result<(), io::Error> {
 fn add(path: PathBuf) {
     // hash-object -w <path>
     let entries = write_objects(path);
-    // update-index <entry>
-    let index = update_index(entries);
-    write_index(index);
+
+    // update-index <entry> (loopet for alle entries
+    update_index(entries);
 }
 
 fn commit(message: String) {
@@ -199,13 +187,12 @@ fn usage() {
 }
 
 fn main() {
-
     let args: Vec<String> = env::args().collect();
     let command = match Command::parse(args) {
         Ok(command) => {
             println!("[INFO]: Executing command: '{:?}'", command);
             command
-        },
+        }
         Err(err) => {
             eprintln!("ERROR: {}", err);
             usage();
