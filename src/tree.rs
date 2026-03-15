@@ -98,10 +98,13 @@ impl TreeCache {
 
                 let sub_cache = cache.get_or_create_tree_mut(base);
 
-                let entry = TreeEntry::new(entry.key, ObjectKind::Blob, rest);
+                let mode = ObjectKind::from_str(&entry.mode_as_octal()).unwrap();
+                let entry = TreeEntry::new(entry.key, mode, rest);
+
                 sub_cache.add_tree(entry);
             } else {
-                let blob = TreeEntry::new(entry.key, ObjectKind::Blob, entry.name.into());
+                let mode = ObjectKind::from_str(&entry.mode_as_octal()).unwrap();
+                let blob = TreeEntry::new(entry.key, mode, entry.name.into());
                 cache.add_blob(blob);
             }
         }
@@ -129,7 +132,7 @@ impl TreeCache {
             let sub_cache = self.trees.entry(base).or_insert(TreeCache::new());
             sub_cache.add_tree(entry);
         } else {
-            let blob = TreeEntry::new(entry.key, ObjectKind::Blob, entry.name);
+            let blob = TreeEntry::new(entry.key, entry.mode, entry.name); // !!!!!!!!!!!!
             self.add_blob(blob);
         }
     }

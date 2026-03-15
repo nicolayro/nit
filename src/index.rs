@@ -49,16 +49,25 @@ impl Index {
             updated_entries.push(entry);
         }
 
+        updated_entries.sort_by_key(|e| e.name.clone());
         Self::new(updated_entries)
     }
 
     pub fn read(index_file: &str) -> Self {
-        let contents = fs::read(index_file).unwrap();
-        let (hbytes, ebytes) = contents.split_at(12);
+        let contents = match fs::read(index_file) {
+            Ok(content) => content,
+            Err(_) => { return Self::new(Vec::new()); }
+        };
+        let (hbytes, mut ebytes) = contents.split_at(12);
 
         let header = Self::read_header(hbytes);
+        let entries = Self::read_entries(&mut ebytes, header.num_entries as usize);
+        // let extensions = Self::read_extensions(&mut ebytes);
+        //
+        // if extensions > 0 {
+        //     todo!("[DEBUG] {} bytes still unread", extensions);
+        // }
 
-        let entries = Self::read_entries(ebytes, header.num_entries as usize);
         Self { header, entries }
     }
 
@@ -70,21 +79,37 @@ impl Index {
         IndexHeader { signature, version, num_entries }
     }
 
-    pub fn read_entries(mut bytes: &[u8], num_entries: usize) -> Vec<IndexEntry> {
-        let mut entries = Vec::with_capacity(num_entries);
+    pub fn read_entries(bytes: &mut &[u8], num_entries: usize) -> Vec<IndexEntry> {
+        let mut entries = Vec::new();
 
         for _ in 0..num_entries {
-            let entry = IndexEntry::read(&mut bytes);
+            let entry = IndexEntry::read(bytes);
 
-            // Pad 1-8 nul bytes as necessary to pad the entry 
-            // to a multiple of eight bytes 
-            let padding_len = 8 - ((6 + entry.name_len()) % 8);
-            take_n_bytes(&mut bytes, padding_len);
+            // Pad 1-8 nul bytes as necessary to pad the entry to a multiple of eight bytes 
+            let padding_len = 8 - ((entry.name_len()+6) % 8);
+            take_n_bytes(bytes, padding_len);
 
             entries.push(entry);
         }
 
+        println!("[INFO] {} entries read. {} bytes remaining in index.", entries.len(), bytes.len());
         entries
+    }
+
+    pub fn _read_extensions(bytes: &mut &[u8]) -> u32 {
+        while bytes.len() > 0 {
+            let signature = take_n_bytes(bytes, 4);
+            let signature = String::from_utf8_lossy(&signature).into_owned();
+            let size = take_u32(bytes) as usize;
+            println!("[DEBUG] signature={}, size={}, bytes.len()={}", signature, size, bytes.len());
+
+            if size > bytes.len() {
+                break;
+            }
+            let _ = take_n_bytes(bytes, size);
+        }
+
+        bytes.len() as u32
     }
 
     pub fn to_bytes(&self) -> Vec<u8> {
@@ -108,7 +133,7 @@ impl Index {
             index_bytes.extend(entry.key.0);
             index_bytes.extend(entry.flags.to_be_bytes());
             index_bytes.extend(entry.name.as_bytes());
-            let padding_len = 8 - ((6 + entry.name_len()) % 8);
+            let padding_len = 8 - (entry.name_len()+6) % 8;
             index_bytes.extend(iter::repeat_n(0, padding_len));
         }
 
@@ -166,19 +191,21 @@ pub struct IndexEntry {
 }
 
 impl IndexEntry {
-    pub fn create(key: Hash, filename: &str) -> Self{ let stat =
-        fs::metadata(filename).unwrap();
+    pub fn create(key: Hash, filename: &str) -> Self { 
+        let stat = fs::metadata(filename).unwrap();
 
-        let ctime_sec  = stat.ctime() as u32; let ctime_nano = stat.ctime_nsec() as u32; let
-            mtime_sec  = stat.mtime() as u32; let mtime_nano = stat.mtime_nsec() as u32;
+        let ctime_sec  = stat.ctime() as u32; 
+        let ctime_nano = stat.ctime_nsec() as u32; 
+        let mtime_sec  = stat.mtime() as u32; 
+        let mtime_nano = stat.mtime_nsec() as u32;
         let dev        = stat.dev() as u32;
         let ino        = stat.ino() as u32;
-        let mode       = (1000 & 0x00F) << 12 | 0o0644 & 0x1FF;
-        let uid        = stat.uid() as u32;
-        let gid        = stat.gid() as u32;
+        let mode       = stat.mode();
+        let uid        = stat.uid();
+        let gid        = stat.gid();
         let size       = stat.len() as u32;
         let flags      = filename.len() as u16;
-        let name       = filename;
+        let name       = filename.to_string();
 
         IndexEntry {
             ctime_sec,
@@ -193,7 +220,7 @@ impl IndexEntry {
             size,
             key,
             flags,
-            name: name.to_string()
+            name
         }
     }
 
@@ -210,10 +237,24 @@ impl IndexEntry {
         let size       = take_u32(bytes);
         let key        = take_hash(bytes);
         let flags      = take_u16(bytes);
-        let name_len   = Self::name_len_from_flags(flags);
-        let name_bytes = take_n_bytes(bytes, name_len);
-        let name       = String::from_utf8(name_bytes)
-                            .expect("ERROR: Unable to read file name");
+        if ((flags >> 12) & 0x3) > 0 {
+            todo!("Support non-zero stage")
+        }
+
+        let name_len = Self::name_len_from_flags(flags);
+        if name_len == 0xFFF {
+            todo!("Support extended name lengths")
+        } else if name_len > 0xFFF {
+            panic!("[ERROR] Corrupted name_len: {}. (flags={:016b})", name_len, flags);
+        } else if name_len >= bytes.len() {
+            panic!("[ERROR] Invalid name length: name of length {} is longer than the available {}.", name_len, bytes.len());
+        }
+
+        let name_bytes = take_n_bytes(bytes, name_len); 
+        let name = String::from_utf8_lossy(&name_bytes).into_owned();
+        if name_len > 512 {
+            panic!("[ERROR] Suspicous name_len {}: flag={:016b}, name={}", name_len, flags, name);
+        }
 
         IndexEntry {
             ctime_sec,
@@ -240,22 +281,17 @@ impl IndexEntry {
         (flags & 0x0FFF).into()
     }
 
-    pub fn object_type(&self) -> u32 {
-        // First 4 bits
-        (self.mode >> 12) & 0x00F
-    }
-
-    pub fn permission(&self) -> u32 {
-        // Final 9 bits
-        self.mode & 0x1FF
+    pub fn mode_as_octal(&self) -> String {
+       let object_type = (self.mode >> 12) & 0x00F;
+       let permission = self.mode & 0x1FF;
+       format!("{:02o}{:04o}", object_type, permission)
     }
 }
 
 impl std::fmt::Display for IndexEntry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:02o}{:04o} {} {}       {}", 
-            self.object_type(),
-            self.permission(),
+        write!(f, "{} {} {}\t{}", 
+            self.mode_as_octal(),
             self.key,
             0,
             self.name)
@@ -283,7 +319,7 @@ impl std::fmt::Debug for IndexEntry {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::hash_blob;
+    use crate::object::*;
 
     #[test]
     fn read_header_from_index() {
@@ -340,7 +376,7 @@ mod test {
         let filename = "examples/blob.c";
         let contents = fs::read(filename).unwrap();
 
-        let key = hash_blob(contents);
+        let key = hash_object(ObjectKind::Blob, contents);
 
         let index_entry = IndexEntry::create(key, filename).to_string();
 

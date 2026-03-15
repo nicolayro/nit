@@ -11,6 +11,8 @@ use std::path::Path;
 #[derive(Debug, Copy, Clone)]
 pub enum ObjectKind {
     Blob = 100644,
+    BlobExe = 100755,
+    BlobSym = 120000,
     Tree = 40000,
     Commit = 0
 }
@@ -20,7 +22,9 @@ impl FromStr for ObjectKind {
     fn from_str(input: &str) -> Result<Self, Self::Err> {
         match input {
             "100644" => Ok(ObjectKind::Blob),
-            "40000"  => Ok(ObjectKind::Tree),
+            "100755" => Ok(ObjectKind::BlobExe),
+            "120000" => Ok(ObjectKind::BlobSym),
+            "040000"  => Ok(ObjectKind::Tree),
             _ => panic!("ERROR: Invalid object mode: {}", input)
         }
     }
@@ -31,6 +35,8 @@ impl std::fmt::Display for ObjectKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ObjectKind::Blob => write!(f, "blob"),
+            ObjectKind::BlobExe => write!(f, "blob"),
+            ObjectKind::BlobSym => write!(f, "blob"),
             ObjectKind::Tree => write!(f, "tree"),
             ObjectKind::Commit => write!(f, "commit"),
         }

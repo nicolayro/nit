@@ -4,7 +4,7 @@ use std::io;
 
 use std::io::{Write};
 use std::fs::File;
-use std::path::{PathBuf, Component};
+use std::path::{Path, PathBuf, Component};
 use std::process::exit;
 use std::time::SystemTime;
 
@@ -27,7 +27,7 @@ use object::*;
 
 const ROOT: &str   = ".git";
 const INDEX_FILE: &str = ".git/index";
-const BRANCH: &str = "command";
+const BRANCH: &str = "nit-test-branch";
 const IGNORE: [&str; 3] = [".git", "playground", "target"];
 
 fn get_author() -> Stamp {
@@ -37,15 +37,19 @@ fn get_author() -> Stamp {
         timestamp: SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap()
-            .as_secs() as u32 - 5 * 86400
+            .as_secs() as u32
     }
 }
 
-fn get_parent() -> Hash {
+fn get_parent() -> Option<Hash> {
     let path = format!("{}/refs/heads/{}", ROOT, BRANCH);
-    let parent_hex = fs::read_to_string(path)
-        .expect("ERROR: Unable to read parent hex. Tip: Are you on the correct branch?");
-    Hash::from_hex(&parent_hex[..40])
+    if Path::new(&path).exists() {
+        let parent_hex = fs::read_to_string(path).unwrap();
+        Some(Hash::from_hex(&parent_hex[..40]))
+    } else {
+        println!("[INFO] refs do not exists");
+        None
+    }
 }
 
 fn remove_leading_dot_slash(path: PathBuf) -> PathBuf {
@@ -92,15 +96,6 @@ fn write_blob(file: &PathBuf) -> Result<Hash, io::Error> {
     write_object(ObjectKind::Blob, content)
 }
 
-fn write_tree(tree: Vec<u8>) -> Result<Hash, io::Error> {
-    write_object(ObjectKind::Tree, tree)
-}
-
-fn write_commit(commit: Commit) -> Result<Hash, io::Error> {
-    let commit_content = format!("{}", commit).into_bytes();
-    write_object(ObjectKind::Commit, commit_content)
-}
-
 fn write_index(index: Index) -> Result<(), io::Error> {
     let index_bytes = index.to_bytes();
     let mut index = File::create(String::from(INDEX_FILE))?;
@@ -112,7 +107,8 @@ fn write_cache(cache: TreeCache) -> Result<Hash, io::Error> {
 
     for blob in cache.blobs {
         let name = format!("{}", blob.name.to_string_lossy());
-        trees_as_bytes.push((name, blob.as_bytes()));
+        let blob_as_bytes = (name, blob.as_bytes());
+        trees_as_bytes.push(blob_as_bytes);
     }
 
     for (dir, cache) in cache.trees {
@@ -138,7 +134,7 @@ fn write_cache(cache: TreeCache) -> Result<Hash, io::Error> {
         .flat_map(|(_, t)| t)
         .collect();
 
-    write_tree(tree)
+    write_object(ObjectKind::Tree, tree)
 }
 
 fn commit(key: Hash, message: String) -> Result<Hash, io::Error> {
@@ -146,10 +142,11 @@ fn commit(key: Hash, message: String) -> Result<Hash, io::Error> {
     let parent = get_parent();
     let author = get_author();
     let committer = get_author();
-    let commit = Commit::create(key, Some(parent), author, committer, message);
+    let commit = Commit::create(key, parent, author, committer, message);
 
     // write commit
-    write_commit(commit)
+    let commit_content = commit.to_string().into_bytes();
+    write_object(ObjectKind::Commit, commit_content)
 }
 
 fn update_refs(commit: Hash) -> Result<(), io::Error> {
