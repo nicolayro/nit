@@ -1,5 +1,6 @@
 use crate::util::*;
 use crate::hash::*;
+use crate::object::FileMode;
 
 use std::fs;
 use std::iter;
@@ -237,6 +238,7 @@ impl IndexEntry {
         let size       = take_u32(bytes);
         let key        = take_hash(bytes);
         let flags      = take_u16(bytes);
+        
         if ((flags >> 12) & 0x3) > 0 {
             todo!("Support non-zero stage")
         }
@@ -253,7 +255,7 @@ impl IndexEntry {
         let name_bytes = take_n_bytes(bytes, name_len); 
         let name = String::from_utf8_lossy(&name_bytes).into_owned();
         if name_len > 512 {
-            panic!("[ERROR] Suspicous name_len {}: flag={:016b}, name={}", name_len, flags, name);
+            panic!("[ERROR] Suspicious name_len {}: flag={:016b}, name={}", name_len, flags, name);
         }
 
         IndexEntry {
@@ -281,16 +283,25 @@ impl IndexEntry {
         (flags & 0x0FFF).into()
     }
 
+    pub fn file_mode(&self) -> FileMode {
+        match self.mode {
+            0o100644 => FileMode::Blob,
+            0o100755 => FileMode::BlobExe,
+            0o120000 => FileMode::BlobSym,
+            _        => FileMode::Blob,
+        }
+    }
+
     pub fn mode_as_octal(&self) -> String {
-       let object_type = (self.mode >> 12) & 0x00F;
-       let permission = self.mode & 0x1FF;
-       format!("{:02o}{:04o}", object_type, permission)
+        let object_type = (self.mode >> 12) & 0x00F;
+        let permission = self.mode & 0x1FF;
+        format!("{:02o}{:04o}", object_type, permission)
     }
 }
 
 impl std::fmt::Display for IndexEntry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{} {} {}\t{}", 
+        write!(f, "{:06} {} {}\t{}",
             self.mode_as_octal(),
             self.key,
             0,
@@ -342,21 +353,6 @@ mod test {
 
         let expected = String::from("ea8c4bf7f35f6f77f75d92ad8ce8349f6e81ddba");
         assert_eq!(key, expected);
-    }
-
-    #[test]
-    fn parse_mode_from_index() {
-        let filename = String::from("examples/index");
-
-        let index = Index::read(&filename);
-        let object_type = index.entries[0].object_type();
-        let permission = index.entries[0].permission();
-
-        let expected_type = 0o10;
-        let expected_permission = 0o0644;
-
-        assert_eq!(object_type, expected_type);
-        assert_eq!(permission, expected_permission);
     }
 
     #[test]

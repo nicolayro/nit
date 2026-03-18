@@ -10,35 +10,56 @@ use std::path::Path;
 
 #[derive(Debug, Copy, Clone)]
 pub enum ObjectKind {
-    Blob = 100644,
-    BlobExe = 100755,
-    BlobSym = 120000,
-    Tree = 40000,
-    Commit = 0
-}
-
-impl FromStr for ObjectKind {
-    type Err = ();
-    fn from_str(input: &str) -> Result<Self, Self::Err> {
-        match input {
-            "100644" => Ok(ObjectKind::Blob),
-            "100755" => Ok(ObjectKind::BlobExe),
-            "120000" => Ok(ObjectKind::BlobSym),
-            "040000"  => Ok(ObjectKind::Tree),
-            _ => panic!("ERROR: Invalid object mode: {}", input)
-        }
-    }
-
+    Blob,
+    Tree,
+    Commit,
 }
 
 impl std::fmt::Display for ObjectKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ObjectKind::Blob => write!(f, "blob"),
-            ObjectKind::BlobExe => write!(f, "blob"),
-            ObjectKind::BlobSym => write!(f, "blob"),
-            ObjectKind::Tree => write!(f, "tree"),
+            ObjectKind::Blob   => write!(f, "blob"),
+            ObjectKind::Tree   => write!(f, "tree"),
             ObjectKind::Commit => write!(f, "commit"),
+        }
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub enum FileMode {
+    Blob,
+    BlobExe,
+    BlobSym,
+    Tree,
+}
+
+impl FileMode {
+    pub fn value(&self) -> i32 {
+        match self {
+            FileMode::Blob    => 100644,
+            FileMode::BlobExe => 100755,
+            FileMode::BlobSym => 120000,
+            FileMode::Tree    => 040000,
+        }
+    }
+
+    pub fn object_kind(&self) -> ObjectKind {
+        match self {
+            FileMode::Tree => ObjectKind::Tree,
+            _              => ObjectKind::Blob,
+        }
+    }
+}
+
+impl FromStr for FileMode {
+    type Err = ();
+    fn from_str(input: &str) -> Result<Self, Self::Err> {
+        match input {
+            "100644"           => Ok(FileMode::Blob),
+            "100755"           => Ok(FileMode::BlobExe),
+            "120000"           => Ok(FileMode::BlobSym),
+            "40000" | "040000" => Ok(FileMode::Tree),
+            _ => panic!("[ERROR]: Invalid file mode: {}", input)
         }
     }
 }
@@ -54,7 +75,6 @@ pub fn write_object(object_type: ObjectKind, content: Vec<u8>) -> Result<Hash, i
     let path_str = format!("{}/{}", ROOT, hash.to_object_path());
     let path = Path::new(&path_str);
     if path.exists() {
-        println!("[INFO] {} {} already exists", object_type, hash);
         return Ok(hash)
     }
 
